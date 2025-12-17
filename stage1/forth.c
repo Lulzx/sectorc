@@ -50,6 +50,7 @@ static int input_char = -2;  /* -2 = need to read, -1 = EOF */
  *   code: function pointer or data
  */
 
+/* Dictionary flags */
 #define F_IMMED  0x80
 #define F_HIDDEN 0x40
 #define F_LENMASK 0x1F
@@ -64,6 +65,14 @@ typedef void (*primfn)(void);
 static void interpret(void);
 static int find_word(const char *name, int len);
 static int parse_number(const char *s, int len, long *result);
+
+/* Check dictionary space */
+static void check_dict_space(int needed) {
+    if (here + needed >= DICT_SIZE) {
+        fprintf(stderr, "Dictionary overflow\n");
+        exit(1);
+    }
+}
 
 /* Stack operations */
 static void push(long v) {
@@ -225,17 +234,28 @@ static void prim_base(void)   { push((long)&base); }
 
 static void prim_comma(void) {
     long v = pop();
+    check_dict_space(sizeof(long));
     *(long*)(dict + here) = v;
     here += sizeof(long);
 }
 
 static void prim_ccomma(void) {
     char v = (char)pop();
+    check_dict_space(1);
     dict[here++] = v;
 }
 
-static void prim_allot(void) { here += pop(); }
-static void prim_align(void) { here = (here + 7) & ~7; }
+static void prim_allot(void) {
+    int n = (int)pop();
+    check_dict_space(n);
+    here += n;
+}
+
+static void prim_align(void) {
+    int aligned = (here + 7) & ~7;
+    check_dict_space(aligned - here);
+    here = aligned;
+}
 
 /* Control */
 static void prim_bye(void) { exit(0); }
@@ -275,14 +295,18 @@ static void prim_colon(void) {
     if (len == 0) return;
 
     /* Align here */
-    here = (here + 7) & ~7;
+    int aligned = (here + 7) & ~7;
+    check_dict_space(aligned - here);
+    here = aligned;
 
     /* Write link */
+    check_dict_space(4);
     *(int*)(dict + here) = latest;
     latest = here;
     here += 4;
 
     /* Write flags + length */
+    check_dict_space(1 + len);
     dict[here++] = len | F_HIDDEN;
 
     /* Write name */
@@ -290,7 +314,9 @@ static void prim_colon(void) {
     here += len;
 
     /* Align for code */
-    here = (here + 7) & ~7;
+    aligned = (here + 7) & ~7;
+    check_dict_space(aligned - here);
+    here = aligned;
 
     /* Will be filled with code pointer */
     state = 1;  /* Enter compile mode */
@@ -482,6 +508,7 @@ static void interpret(void) {
                 b->fn();
             } else {
                 /* Compile: store function pointer */
+                check_dict_space(sizeof(primfn));
                 *(primfn*)(dict + here) = b->fn;
                 here += sizeof(primfn);
             }
@@ -500,6 +527,7 @@ static void interpret(void) {
             if (state == 0 || (flags & F_IMMED)) {
                 fn();
             } else {
+                check_dict_space(sizeof(primfn));
                 *(primfn*)(dict + here) = fn;
                 here += sizeof(primfn);
             }

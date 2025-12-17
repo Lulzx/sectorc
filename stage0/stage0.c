@@ -85,6 +85,10 @@ int main(void) {
         if (lo < 0) continue;
 
         /* Store byte and advance pointer */
+        if (ptr - buf >= BUFSIZE) {
+            write(2, "Buffer overflow\n", 16);
+            return 1;
+        }
         *ptr++ = (hi << 4) | lo;
     }
 

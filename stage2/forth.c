@@ -81,6 +81,14 @@ static int find_word(const char *name, int len);
 static int parse_number(const char *s, int len, long *result);
 static int read_word(char *buf, int maxlen);
 
+/* Check dictionary space */
+static void check_dict_space(int needed) {
+    if (here + needed >= DICT_SIZE) {
+        fprintf(stderr, "Dictionary overflow\n");
+        exit(1);
+    }
+}
+
 /* ============================================
  * Stack Operations
  * ============================================ */
@@ -393,6 +401,10 @@ static void prim_squote(void) {
 
     if (state == 0) {
         /* Interpret mode: put in string space */
+        if (string_ptr + len >= STRING_SPACE) {
+            fprintf(stderr, "String space overflow\n");
+            exit(1);
+        }
         char *dest = strings + string_ptr;
         memcpy(dest, buf, len);
         string_ptr += len;
@@ -401,10 +413,15 @@ static void prim_squote(void) {
     } else {
         /* Compile mode: embed string in definition */
         /* For simplicity, we put the string address and length as literals */
+        check_dict_space(len);
         char *dest = dict + here;
         memcpy(dest, buf, len);
         here += len;
-        here = (here + 7) & ~7;  /* Align */
+        
+        int aligned = (here + 7) & ~7;
+        check_dict_space(aligned - here);
+        here = aligned;
+        
         push((long)dest);
         push(len);
     }
@@ -445,17 +462,28 @@ static void prim_base(void)   { push((long)&base); }
 
 static void prim_comma(void) {
     long v = pop();
+    check_dict_space(sizeof(long));
     *(long*)(dict + here) = v;
     here += sizeof(long);
 }
 
 static void prim_ccomma(void) {
     char v = (char)pop();
+    check_dict_space(1);
     dict[here++] = v;
 }
 
-static void prim_allot(void) { here += pop(); }
-static void prim_align(void) { here = (here + 7) & ~7; }
+static void prim_allot(void) {
+    int n = (int)pop();
+    check_dict_space(n);
+    here += n;
+}
+
+static void prim_align(void) {
+    int aligned = (here + 7) & ~7;
+    check_dict_space(aligned - here);
+    here = aligned;
+}
 static void prim_aligned(void) { long a = pop(); push((a + 7) & ~7); }
 
 /* ============================================
@@ -606,14 +634,22 @@ static void prim_colon(void) {
     int len = read_word(word_buf, WORD_BUF_SIZE);
     if (len == 0) return;
 
-    here = (here + 7) & ~7;
+    int aligned = (here + 7) & ~7;
+    check_dict_space(aligned - here);
+    here = aligned;
+
+    check_dict_space(4);
     *(int*)(dict + here) = latest;
     latest = here;
     here += 4;
+    check_dict_space(1 + len);
     dict[here++] = len | F_HIDDEN;
     memcpy(dict + here, word_buf, len);
     here += len;
-    here = (here + 7) & ~7;
+    
+    aligned = (here + 7) & ~7;
+    check_dict_space(aligned - here);
+    here = aligned;
     state = 1;
 }
 
@@ -627,15 +663,24 @@ static void prim_create(void) {
     int len = read_word(word_buf, WORD_BUF_SIZE);
     if (len == 0) return;
 
-    here = (here + 7) & ~7;
+    int aligned = (here + 7) & ~7;
+    check_dict_space(aligned - here);
+    here = aligned;
+
+    check_dict_space(4);
     *(int*)(dict + here) = latest;
     latest = here;
     here += 4;
+    check_dict_space(1 + len);
     dict[here++] = len;
     memcpy(dict + here, word_buf, len);
     here += len;
-    here = (here + 7) & ~7;
+    
+    aligned = (here + 7) & ~7;
+    check_dict_space(aligned - here);
+    here = aligned;
     /* Store a placeholder code pointer */
+    check_dict_space(sizeof(long));
     *(long*)(dict + here) = 0;
     here += sizeof(long);
 }
@@ -980,6 +1025,7 @@ static void interpret(void) {
             if (state == 0 || b->immediate) {
                 b->fn();
             } else {
+                check_dict_space(sizeof(primfn));
                 *(primfn*)(dict + here) = b->fn;
                 here += sizeof(primfn);
             }
@@ -997,6 +1043,7 @@ static void interpret(void) {
             if (state == 0 || (flags & F_IMMED)) {
                 fn();
             } else {
+                check_dict_space(sizeof(primfn));
                 *(primfn*)(dict + here) = fn;
                 here += sizeof(primfn);
             }

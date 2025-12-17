@@ -910,6 +910,8 @@ static void parse_primary_expr(void) {
             }
             expect(TK_RPAREN);
 
+            if (argc > 8) error("more than 8 arguments not supported");
+
             /* Load arguments into registers x0-x7 */
             for (int i = argc - 1; i >= 0; i--) {
                 emit("    ldr x%d, [sp], #16", i);
@@ -1222,13 +1224,14 @@ static void parse_function(const char *name, int return_type, int ptr_level) {
 
     /* First pass: count local variables */
     /* For simplicity, we'll emit prologue with estimated size */
-    int estimated_locals = 256;  /* Conservative estimate */
+    int estimated_locals = MAX_LOCALS * SIZE_INT;  /* Safe upper bound */
     current_frame_size = estimated_locals;
 
     emit_prologue(name, estimated_locals);
 
     /* Store parameters from registers to stack */
-    for (int i = 0; i < param_count && i < 8; i++) {
+    if (param_count > 8) error("more than 8 parameters not supported");
+    for (int i = 0; i < param_count; i++) {
         emit("    str x%d, [x29, #-%d]", i, locals[i].offset);
     }
 
