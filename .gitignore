@@ -1,0 +1,24 @@
+# Compiled binaries
+stage0/stage0
+stage1/forth
+stage2/forth
+stage3/cc
+stage4/cc
+stage5/cc
+
+# Object files
+*.o
+
+# Generated files
+manifest.txt
+*.hex
+
+# Test artifacts
+/tmp/test*
+
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+*~

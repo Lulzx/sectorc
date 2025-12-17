@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build all stages
+      run: make all
+
+    - name: Run Stage 0 tests
+      run: cd tests/stage0 && ./run_tests.sh
+
+    - name: Run Stage 1 tests
+      run: cd tests/stage1 && ./run_tests.sh
+
+    - name: Run Stage 2 tests
+      run: cd tests/stage2 && ./run_tests.sh
+
+    - name: Run Stage 3 tests
+      run: cd tests/stage3 && ./run_tests.sh
+
+    - name: Run Stage 4 tests
+      run: cd tests/stage4 && ./run_tests.sh
+
+    - name: Run Stage 5 tests
+      run: cd tests/stage5 && ./run_tests.sh
+
+    - name: Generate verification manifest
+      run: |
+        chmod +x bootstrap.sh
+        ./bootstrap.sh
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: sectorc-binaries
+        path: |
+          stage0/stage0
+          stage1/forth
+          stage2/forth
+          stage3/cc
+          stage4/cc
+          stage5/cc
+          manifest.txt
