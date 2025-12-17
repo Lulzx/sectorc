@@ -33,7 +33,6 @@
 #define MAX_LOCALS      256
 #define MAX_MEMBERS     64
 #define MAX_CASES       256
-#define MAX_LABELS      256
 #define MAX_INCLUDE     16
 #define MAX_MACRO_ARGS  16
 
@@ -160,8 +159,7 @@ static int num_strings = 0;
 static struct macro macros[MAX_DEFINES];
 static int num_macros = 0;
 
-/* Labels for goto */
-static struct { char name[MAX_IDENT]; int label; } labels[MAX_LABELS];
+/* Labels for goto (reserved for future use) */
 static int num_labels = 0;
 
 /* Code generation */
@@ -220,14 +218,6 @@ static struct type *array_of(struct type *base, int size) {
     t->base = base;
     t->array_size = size;
     return t;
-}
-
-static int is_integer(struct type *t) {
-    return t->kind >= TYPE_CHAR && t->kind <= TYPE_ULONG;
-}
-
-static int is_pointer(struct type *t) {
-    return t->kind == TYPE_PTR || t->kind == TYPE_ARRAY;
 }
 
 static void init_types(void) {
@@ -1160,7 +1150,6 @@ static void parse_stmt(void) {
         expect(TK_SEMI);
 
         /* Save update expression */
-        long pos = ftell(output_file);
         FILE *tmp = tmpfile();
         FILE *old = output_file;
         output_file = tmp;
