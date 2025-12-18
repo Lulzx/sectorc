@@ -122,18 +122,16 @@ Written in Forth, loaded by Stage 1. Adds higher-level words needed for compiler
 
 ### Stage 3: Subset C Compiler
 
-Written in Forth, runs on Stage 1+2. Currently outputs ARM64 assembly for a minimal program.
+`stage3/cc` compiles a C subset to ARM64 assembly.
 
-**Current implementation:**
-- Generates valid ARM64 assembly text
-- Function prologue/epilogue generation
-- Hardcoded "return 42" as proof-of-concept
-
-**Planned features:**
+**Features:**
 - Types: int, char, void, pointers, arrays
 - Statements: if/else, while, for, return
 - Expressions: arithmetic, comparison, logical
 - Function definitions and calls
+
+**Bootstrappable proof-of-concept (`stage3/cc.fth`):**
+- Emits ARM64 assembly for a minimal program (used by `bootstrap.sh`)
 
 ### Stage 4: C89 Compiler
 
