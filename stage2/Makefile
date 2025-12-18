@@ -8,12 +8,8 @@ CFLAGS = -O0 -Wall -Wextra -arch arm64
 
 all: forth
 
-forth:
-	@if [ -f forth.c ]; then \
-		$(CC) $(CFLAGS) -o forth forth.c; \
-	else \
-		test -x forth || (echo "stage2/forth.c missing and stage2/forth not present" >&2; exit 1); \
-	fi
+forth: forth.c
+	$(CC) $(CFLAGS) -o forth forth.c
 
 test: forth
 	@echo "=== Testing Stage 2 Forth ==="
@@ -22,7 +18,7 @@ test: forth
 	@../tests/stage2/run_tests.sh ./forth
 
 clean:
-	@if [ -f forth.c ]; then rm -f forth; fi
+	rm -f forth
 
 size: forth
 	@ls -la forth

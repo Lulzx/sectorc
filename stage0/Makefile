@@ -35,7 +35,7 @@ size: stage0
 	@ls -l stage0 | awk '{print $$5 " bytes"}'
 	@echo ""
 	@echo "=== Code section size (target: ~512 bytes) ==="
-	@otool -l stage0 | grep -A4 "__TEXT,__text" | grep size || echo "Use otool -l stage0 for details"
+	@otool -l stage0 | awk '$$1=="sectname" && $$2=="__text"{seen_text=1} seen_text && $$1=="size"{print $$0; exit}' || echo "Use otool -l stage0 for details"
 
 # Test with a simple exit code program
 test: stage0

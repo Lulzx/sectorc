@@ -13,10 +13,16 @@ echo "Sectorc: Trustworthy Bootstrap Chain"
 echo "==========================================="
 echo ""
 
+# Build host binaries for each stage so we can hash them in a manifest.
+echo "=== Building Host Stage Binaries (for hashing) ==="
+make -s all
+echo "Host stage binaries built."
+echo ""
+
 # Stage 0: Hex Loader
 echo "=== Stage 0: Building Hex Loader ==="
 # We use the C version as the 'host' seed for this environment
-clang -O0 -o stage0/stage0 stage0/stage0.c
+make -s stage0
 echo "Stage 0 built."
 echo ""
 
@@ -46,8 +52,8 @@ echo "Pipeline: Stage 0 (Loader) <- Stage 1 (Hex) <- Stage 2 (Forth) <- Stage 3 
 # 4. Stage 3 Source (Compiler)
 # 5. "RUN" command (if not at end of stage3)
 
-# We expect Stage 3 to output the assembly for the "Hello World" program defined in it.
-(cat stage1.hex; printf "\x60"; cat stage2/forth.fth stage3/cc.fth) | ./stage0/stage0 > output.s
+# We expect Stage 3 to compile a tiny C program from stdin and output assembly.
+(cat stage1.hex; printf "\x60"; cat stage2/forth.fth stage3/cc.fth; cat tests/stage3/hello.c) | ./stage0/stage0 > output.s
 
 echo "Pipeline finished."
 echo "Output size: $(wc -c < output.s) bytes"
@@ -64,6 +70,17 @@ else
     cat output.s
     exit 1
 fi
+
+echo ""
+echo "=== Manifest ==="
+echo "Generating manifest.txt..."
+{
+  echo "# Sectorc Verification Manifest"
+  echo "# Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  echo ""
+  shasum -a 256 stage0/stage0 stage1/forth stage2/forth stage3/cc stage4/cc stage5/cc stage1.hex output.s 2>/dev/null
+} > manifest.txt
+echo "Wrote manifest.txt"
 
 echo ""
 echo "==========================================="

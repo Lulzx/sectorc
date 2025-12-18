@@ -7,12 +7,16 @@
 
 : [COMPILE] ' , ; IMMEDIATE
 
+\ Compile the execution token (xt) of the next word as a literal.
+\ This relies on Stage 1 providing an IMMEDIATE LITERAL word.
+: ['] ' [COMPILE] LITERAL ; IMMEDIATE
+
 \ =========================================================
 \ Control Flow (needed before ?DUP)
 \ =========================================================
 
 : IF ( -- addr )
-  ' 0BRANCH ,     \ Compile 0BRANCH
+  ['] 0BRANCH ,   \ Compile 0BRANCH
   HERE            \ Save location of the offset
   0 ,             \ Placeholder for the offset
 ; IMMEDIATE
@@ -23,7 +27,7 @@
 ; IMMEDIATE
 
 : ELSE ( addr -- addr' )
-  ' BRANCH ,      \ Compile BRANCH
+  ['] BRANCH ,    \ Compile BRANCH
   HERE            \ Save location for new offset
   0 ,             \ Placeholder
   SWAP [COMPILE] THEN \ Patch the IF branch to point here
@@ -34,12 +38,12 @@
 ; IMMEDIATE
 
 : UNTIL ( addr -- )
-  ' 0BRANCH ,
+  ['] 0BRANCH ,
   HERE - ,        \ Compile back-offset
 ; IMMEDIATE
 
 : AGAIN ( addr -- )
-  ' BRANCH ,
+  ['] BRANCH ,
   HERE - ,        \ Compile back-offset
 ; IMMEDIATE
 

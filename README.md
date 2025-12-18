@@ -125,13 +125,14 @@ Written in Forth, loaded by Stage 1. Adds higher-level words needed for compiler
 `stage3/cc` compiles a C subset to ARM64 assembly.
 
 **Features:**
-- Types: int, char, void, pointers, arrays
+- Types: int, pointers, arrays
 - Statements: if/else, while, for, return
-- Expressions: arithmetic, comparison, logical
-- Function definitions and calls
+- Expressions: arithmetic, comparison, assignment
+- Function definitions and calls (incl. recursion)
 
-**Bootstrappable proof-of-concept (`stage3/cc.fth`):**
-- Emits ARM64 assembly for a minimal program (used by `bootstrap.sh`)
+**Bootstrappable Stage 3 (`stage3/cc.fth`):**
+- Runs on Stage 1 + Stage 2 and compiles `tests/stage3/*.c` to ARM64 assembly (used by `bootstrap.sh`).
+- The host `stage3/cc` binary is currently a convenience wrapper around the Stage 4 implementation.
 
 ### Stage 4: C89 Compiler
 

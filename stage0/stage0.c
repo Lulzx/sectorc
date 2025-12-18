@@ -4,8 +4,8 @@
  * Reads ASCII hex pairs from stdin, writes to executable buffer, jumps to it.
  * Target: Minimal, auditable code for trustworthy bootstrapping.
  *
- * This version allocates separate code (RX) and data (RW) regions to work
- * with Apple Silicon's W^X (write XOR execute) enforcement.
+ * This version uses MAP_JIT and pthread_jit_write_protect_np() to safely
+ * write to executable memory on Apple Silicon (W^X enforcement).
  *
  * Compile: clang -O0 -o stage0 stage0.c
  */
@@ -14,11 +14,9 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <libkern/OSCacheControl.h>
-#include <string.h>
 
 /* Buffer sizes */
 #define CODE_SIZE 0x4000   /* 16KB for code */
-#define DATA_SIZE 0x10000  /* 64KB for data */
 
 /* Convert hex character to nibble value (0-15) */
 static int hex_to_nibble(int c) {
@@ -43,7 +41,7 @@ static void skip_line(void) {
 }
 
 int main(void) {
-    unsigned char *code_buf, *data_buf, *ptr;
+    unsigned char *code_buf, *ptr;
     int c, hi, lo;
     void (*code)(void *data);
 
@@ -55,17 +53,6 @@ int main(void) {
 
     if (code_buf == MAP_FAILED) {
         write(2, "code mmap failed\n", 17);
-        return 1;
-    }
-
-    /* Allocate writable memory for data (RW) */
-    data_buf = mmap(0, DATA_SIZE,
-                    PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANON,
-                    -1, 0);
-
-    if (data_buf == MAP_FAILED) {
-        write(2, "data mmap failed\n", 17);
         return 1;
     }
 
@@ -113,9 +100,9 @@ int main(void) {
     /* Flush instruction cache */
     sys_icache_invalidate(code_buf, ptr - code_buf);
 
-    /* Jump to loaded code, passing data buffer address in x0 */
+    /* Jump to loaded code (Stage 1 will allocate its own data buffer) */
     code = (void (*)(void *))code_buf;
-    code(data_buf);
+    code(0);
 
     return 0;
 }

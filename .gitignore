@@ -12,6 +12,8 @@ stage5/cc
 # Generated files
 manifest.txt
 *.hex
+stage1/forth.exe
+output.s
 
 # Test artifacts
 /tmp/test*

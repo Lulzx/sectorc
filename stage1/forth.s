@@ -52,8 +52,8 @@ got_data_buffer:
     //   +0x0020: input_buffer (256 bytes)
     //   +0x0120: word_buffer (64 bytes)
     //   +0x0160: return_stack (8192 bytes)
-    //   +0x2160: data_space (up to 0x8000)
-    //   +0x8000: param_stack (8192 bytes) - grows downward
+    //   +0x2160: data_space (up to 0xE000)
+    //   +0xE000: param_stack (8192 bytes) - grows downward
 
     // Initialize STATE = 0
     str     xzr, [x25, #0]
@@ -77,9 +77,8 @@ got_data_buffer:
     add     x21, x21, #8192
     add     x21, x21, x25
 
-    // Set up parameter stack pointer
-    mov     x27, #0x8000
-    add     x27, x27, #8192
+    // Set up parameter stack pointer (top of buffer)
+    mov     x27, #0x10000
     add     x27, x27, x25
 
     // Load initial volatile state into registers
@@ -374,8 +373,19 @@ do_TOR:
     NEXT
 
 .align 4
-name_FROMR:
+name_RFETCH:
     .quad name_TOR - Lbase
+    .byte 2, 'R','@', 0, 0, 0, 0, 0
+code_RFETCH:
+    .quad do_RFETCH - Lbase
+do_RFETCH:
+    ldr     x0, [x21]
+    str     x0, [x27, #-8]!
+    NEXT
+
+.align 4
+name_FROMR:
+    .quad name_RFETCH - Lbase
     .byte 2, 'R','>', 0, 0, 0, 0, 0
 code_FROMR:
     .quad do_FROMR - Lbase
@@ -426,7 +436,13 @@ do_KEY:
     mov     x2, #1
     mov     x16, #SYS_read
     svc     #0x80
+    cmp     x0, #1
+    b.eq    1f
+    mov     x0, #-1
+    b       2f
+1:
     ldrb    w0, [x25, #OFF_WORD]
+2:
     str     x0, [x27, #-8]!
     NEXT
 
@@ -442,8 +458,27 @@ do_LIT:
     NEXT
 
 .align 4
-name_EXIT:
+name_LITERAL:
     .quad name_LIT - Lbase
+    .byte 7 | F_IMMED, 'L','I','T','E','R','A','L'
+code_LITERAL:
+    .quad do_LITERAL - Lbase
+do_LITERAL:
+    // Compile a literal from stack into the current definition:
+    //   ['] LIT ,  (emit LIT)
+    //   ,          (emit value)
+    ldr     x0, [x27], #8
+    adr     x1, code_LIT
+    sub     x1, x1, x28
+    str     x1, [x22], #8
+    str     x0, [x22], #8
+    sub     x0, x22, x25
+    str     x0, [x25, #OFF_HERE]
+    NEXT
+
+.align 4
+name_EXIT:
+    .quad name_LITERAL - Lbase
     .byte 4, 'E','X','I','T', 0, 0, 0
 code_EXIT:
     .quad do_EXIT - Lbase
@@ -501,7 +536,7 @@ do_COMMA:
 .align 4
 name_ALLOT:
     .quad name_COMMA - Lbase
-    .byte 5, 'A','L','L','O','T', 0, 0, 0
+    .byte 5, 'A','L','L','O','T', 0, 0
 code_ALLOT:
     .quad do_ALLOT - Lbase
 do_ALLOT:
@@ -514,7 +549,7 @@ do_ALLOT:
 .align 4
 name_STATE:
     .quad name_ALLOT - Lbase
-    .byte 5, 'S','T','A','T','E', 0, 0, 0
+    .byte 5, 'S','T','A','T','E', 0, 0
 code_STATE:
     .quad do_STATE - Lbase
 do_STATE:
@@ -525,7 +560,7 @@ do_STATE:
 .align 4
 name_LATEST:
     .quad name_STATE - Lbase
-    .byte 6, 'L','A','T','E','S','T', 0, 0
+    .byte 6, 'L','A','T','E','S','T', 0
 code_LATEST:
     .quad do_LATEST - Lbase
 do_LATEST:
@@ -634,13 +669,40 @@ code_TICK:
 do_TICK:
     bl      read_word
     bl      find_word
-    sub     x0, x0, x28
+    cbz     x0, 1f
+    // Convert name header -> code field address (execution token)
+    // code = align8(name + 8 + 1 + len)
+    add     x1, x0, #8
+    ldrb    w2, [x1], #1
+    and     w2, w2, #F_LENMASK
+    add     x1, x1, x2
+    add     x1, x1, #7
+    and     x1, x1, #~7
+    sub     x0, x1, x28
     str     x0, [x27, #-8]!
+    b       2f
+1:  // Unknown word -> push 0
+    mov     x0, #0
+    str     x0, [x27, #-8]!
+2:
     NEXT
 
 .align 4
-name_BACKSLASH:
+name_EXECUTE:
     .quad name_TICK - Lbase
+    .byte 7, 'E','X','E','C','U','T','E'
+code_EXECUTE:
+    .quad do_EXECUTE - Lbase
+do_EXECUTE:
+    ldr     x0, [x27], #8      // xt (code field offset)
+    add     x20, x28, x0       // W = Lbase + xt
+    ldr     x1, [x20]          // codeword offset
+    add     x1, x1, x28        // code address
+    br      x1
+
+.align 4
+name_BACKSLASH:
+    .quad name_EXECUTE - Lbase
     .byte 1 | F_IMMED, '\\', 0, 0, 0, 0, 0, 0
 code_BACKSLASH:
     .quad do_BACKSLASH - Lbase
