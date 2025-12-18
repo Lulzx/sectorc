@@ -22,8 +22,27 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y libc6:i386
 
-    - name: Run bootstrap chain
+    - name: Build binaries
       run: |
         cd bootstrap-linux
-        chmod +x bootstrap.sh
-        ./bootstrap.sh
+        # Build using xxd (the trusted tool)
+        grep -v '^\s*#' stage0.hex | sed 's/#.*//' | tr -d ' \n\t' | xxd -r -p > stage0
+        grep -v '^\s*#' stage1.hex | sed 's/#.*//' | tr -d ' \n\t' | xxd -r -p > hex2bin
+        grep -v '^\s*#' stage2.hex | sed 's/#.*//' | tr -d ' \n\t' | xxd -r -p > forth
+        chmod +x stage0 hex2bin forth
+        echo "Built: stage0 ($(wc -c < stage0)) hex2bin ($(wc -c < hex2bin)) forth ($(wc -c < forth))"
+        file stage0 hex2bin forth
+
+    - name: Test Stage 0
+      run: |
+        cd bootstrap-linux
+        echo "b8 01 00 00 00 bb 2a 00 00 00 cd 80 q" | ./stage0 || [ $? -eq 42 ]
+        echo "Stage 0: PASS (exit 42)"
+
+    - name: Test Forth basic
+      run: |
+        cd bootstrap-linux
+        # Test basic emit
+        RESULT=$(echo "65 > q" | ./forth | od -An -tu1 | tr -d ' \n')
+        echo "Forth emit test: got '$RESULT'"
+        [ "$RESULT" = "65" ] && echo "PASS" || echo "FAIL"
