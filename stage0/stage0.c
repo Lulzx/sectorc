@@ -4,27 +4,28 @@
  * Reads ASCII hex pairs from stdin, writes to executable buffer, jumps to it.
  * Target: Minimal, auditable code for trustworthy bootstrapping.
  *
- * This C version uses macOS JIT APIs for Apple Silicon compatibility.
- * The generated assembly should be inspected for verification.
+ * This version allocates separate code (RX) and data (RW) regions to work
+ * with Apple Silicon's W^X (write XOR execute) enforcement.
  *
  * Compile: clang -O0 -o stage0 stage0.c
- * Size target: ~512 bytes of actual logic
  */
 
 #include <sys/mman.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <libkern/OSCacheControl.h>
+#include <string.h>
 
-/* Buffer size for loaded code */
-#define BUFSIZE 0x10000  /* 64KB */
+/* Buffer sizes */
+#define CODE_SIZE 0x4000   /* 16KB for code */
+#define DATA_SIZE 0x10000  /* 64KB for data */
 
 /* Convert hex character to nibble value (0-15) */
 static int hex_to_nibble(int c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    return -1;  /* Invalid hex digit */
+    return -1;
 }
 
 /* Read one byte from stdin, returns -1 on EOF */
@@ -42,22 +43,33 @@ static void skip_line(void) {
 }
 
 int main(void) {
-    unsigned char *buf, *ptr;
+    unsigned char *code_buf, *data_buf, *ptr;
     int c, hi, lo;
-    void (*code)(void);
+    void (*code)(void *data);
 
-    /* Allocate executable memory with MAP_JIT for Apple Silicon */
-    buf = mmap(0, BUFSIZE,
-               PROT_READ | PROT_WRITE | PROT_EXEC,
-               MAP_PRIVATE | MAP_ANON | MAP_JIT,
-               -1, 0);
+    /* Allocate executable memory for code (will be RX after switching) */
+    code_buf = mmap(0, CODE_SIZE,
+                    PROT_READ | PROT_WRITE | PROT_EXEC,
+                    MAP_PRIVATE | MAP_ANON | MAP_JIT,
+                    -1, 0);
 
-    if (buf == MAP_FAILED) {
-        write(2, "mmap failed\n", 12);
+    if (code_buf == MAP_FAILED) {
+        write(2, "code mmap failed\n", 17);
         return 1;
     }
 
-    ptr = buf;
+    /* Allocate writable memory for data (RW) */
+    data_buf = mmap(0, DATA_SIZE,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANON,
+                    -1, 0);
+
+    if (data_buf == MAP_FAILED) {
+        write(2, "data mmap failed\n", 17);
+        return 1;
+    }
+
+    ptr = code_buf;
 
     /* Enable write access to JIT memory */
     pthread_jit_write_protect_np(0);
@@ -74,9 +86,12 @@ int main(void) {
             continue;
         }
 
+        /* Backtick '`' triggers execution */
+        if (c == '`') break;
+
         /* Convert first hex digit */
         hi = hex_to_nibble(c);
-        if (hi < 0) continue;  /* Skip invalid characters */
+        if (hi < 0) continue;
 
         /* Read and convert second hex digit */
         c = read_byte();
@@ -85,22 +100,22 @@ int main(void) {
         if (lo < 0) continue;
 
         /* Store byte and advance pointer */
-        if (ptr - buf >= BUFSIZE) {
-            write(2, "Buffer overflow\n", 16);
+        if (ptr - code_buf >= CODE_SIZE) {
+            write(2, "Code overflow\n", 14);
             return 1;
         }
         *ptr++ = (hi << 4) | lo;
     }
 
-    /* Disable write access, enable execute */
+    /* Switch to execute mode - code is now RX (no more writes allowed) */
     pthread_jit_write_protect_np(1);
 
-    /* Flush instruction cache for JIT region */
-    sys_icache_invalidate(buf, ptr - buf);
+    /* Flush instruction cache */
+    sys_icache_invalidate(code_buf, ptr - code_buf);
 
-    /* Jump to loaded code */
-    code = (void (*)(void))buf;
-    code();
+    /* Jump to loaded code, passing data buffer address in x0 */
+    code = (void (*)(void *))code_buf;
+    code(data_buf);
 
     return 0;
 }

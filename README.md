@@ -9,9 +9,15 @@ Stage 0       Stage 1       Stage 2       Stage 3       Stage 4       Stage 5
 ┌────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐
 │ Hex    │──▶│ Minimal │──▶│Extended │──▶│ Subset  │──▶│  C89    │──▶│  C99    │
 │ Loader │   │ Forth   │   │ Forth   │   │   C     │   │Compiler │   │Compiler │
-│ ~512B  │   │ ~2KB    │   │ ~8KB    │   │ ~15KB   │   │ ~40KB   │   │ ~80KB   │
+│  (C)   │   │ (asm)   │   │ (Forth) │   │ (Forth) │   │  (C)    │   │  (C)    │
 └────────┘   └─────────┘   └─────────┘   └─────────┘   └─────────┘   └─────────┘
 ```
+
+**Current Status:** Stages 0-3 are functional. The bootstrap pipeline successfully:
+1. Loads the Forth interpreter from hex format
+2. Extends it with control flow and utility words
+3. Runs a C compiler written in Forth
+4. Outputs valid ARM64 assembly
 
 ## Building
 
@@ -60,20 +66,21 @@ make stage5
 
 ```
 sectorc/
-├── stage0/           # Hex loader (~512 bytes)
+├── stage0/           # Hex loader
 │   ├── stage0.c      # C implementation with macOS JIT support
 │   └── stage0.s      # ARM64 assembly reference
 ├── stage1/           # Minimal Forth interpreter
-│   ├── forth.c       # C implementation
-│   └── forth.s       # ARM64 assembly reference
+│   └── forth.s       # ARM64 assembly (converted to hex for loading)
 ├── stage2/           # Extended Forth
-│   └── forth.c       # Adds strings, file I/O, control flow
+│   └── forth.fth     # Forth source: control flow, stack ops
 ├── stage3/           # Subset C compiler
-│   └── cc.c          # Compiles to ARM64 assembly
+│   └── cc.fth        # Forth source: compiles C to ARM64 assembly
 ├── stage4/           # C89 compiler
 │   └── cc.c          # Full C89 with struct/union/enum
 ├── stage5/           # C99 compiler
 │   └── cc.c          # C99 extensions
+├── tools/            # Build utilities
+│   └── macho_to_hex.sh  # Convert Mach-O binary to hex
 ├── tests/            # Test suites for each stage
 ├── bootstrap.sh      # Full bootstrap script
 └── Makefile          # Top-level build
@@ -104,19 +111,25 @@ A direct-threaded Forth interpreter with ~65 primitive words.
 
 ### Stage 2: Extended Forth
 
-Adds advanced features for building a compiler.
+Written in Forth, loaded by Stage 1. Adds higher-level words needed for compiler construction.
 
 **Features:**
-- String handling (S", TYPE, COMPARE)
-- File I/O (OPEN-FILE, READ-FILE, INCLUDE)
-- Conditional compilation ([IF], [ELSE], [THEN])
-- Comments (\ and ( ))
+- Control flow: IF/THEN/ELSE, BEGIN/UNTIL/AGAIN
+- Stack operations: NIP, TUCK, ?DUP, ROT, 2DROP, 2DUP
+- Compilation helpers: [COMPILE]
+- I/O utilities: SPACE, CR
+- Comments: \ (backslash comments)
 
 ### Stage 3: Subset C Compiler
 
-Compiles a useful subset of C to ARM64 assembly.
+Written in Forth, runs on Stage 1+2. Currently outputs ARM64 assembly for a minimal program.
 
-**Supported:**
+**Current implementation:**
+- Generates valid ARM64 assembly text
+- Function prologue/epilogue generation
+- Hardcoded "return 42" as proof-of-concept
+
+**Planned features:**
 - Types: int, char, void, pointers, arrays
 - Statements: if/else, while, for, return
 - Expressions: arithmetic, comparison, logical

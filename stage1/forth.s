@@ -1,844 +1,794 @@
 // Stage 1: Minimal Forth Interpreter for ARM64 macOS
-// A direct-threaded Forth with ~20 primitive words
-//
-// Register allocation:
-//   x19 = IP (Instruction Pointer) - points to next codeword
-//   x20 = W  (Working register) - current word address
-//   x21 = RSP (Return Stack Pointer)
-//   x22 = HERE (dictionary pointer)
-//   x23 = LATEST (pointer to latest word)
-//   x24 = STATE (0=interpret, 1=compile)
-//   sp  = PSP (Parameter Stack Pointer)
-//   x0  = TOS (Top of Stack) for optimization
-//
-// Dictionary entry format:
-//   +0:  link pointer (8 bytes) - points to previous entry
-//   +8:  flags + length (1 byte)
-//   +9:  name (N bytes, padded to 8-byte boundary)
-//   +?:  codeword (8 bytes) - address of code to execute
-//   +?:  data/parameter field
+// Designed for W^X (write XOR execute) environments like Apple Silicon.
+// Code is in RX region, data in separate RW region passed via x0.
 
-.global _main
+.text
 .align 4
+.global _main
+
+// Register allocation:
+//   x19 = IP (Instruction Pointer)
+//   x20 = W (Working register)
+//   x21 = RSP (Return Stack Pointer) - in DATA region
+//   x22 = HERE (dictionary pointer) - in DATA region
+//   x23 = LATEST (pointer to latest word) - can be in CODE or DATA
+//   x24 = STATE (0=interpret, 1=compile)
+//   x25 = DATA base pointer (received in x0)
+//   x27 = PSP (Parameter Stack Pointer) - in DATA region
+//   x28 = CODE base pointer (Lbase)
+//   sp  = System stack (for function calls only)
+
+_main:
+Lbase:
+    // For standalone testing, allocate DATA buffer if x0 looks like argc (small number)
+    // Stage 0 passes data buffer in x0 which will be a large address
+    cmp     x0, #256            // argc would be small
+    b.ge    got_data_buffer
+
+    // Allocate data buffer using mmap
+    stp     x29, x30, [sp, #-16]!
+    mov     x0, #0              // addr = NULL
+    mov     x1, #0x10000        // len = 64KB
+    mov     x2, #3              // PROT_READ | PROT_WRITE
+    mov     x3, #0x1002         // MAP_ANON | MAP_PRIVATE
+    mov     x4, #-1             // fd = -1
+    mov     x5, #0              // offset = 0
+    mov     x16, #197           // SYS_mmap
+    svc     #0x80
+    ldp     x29, x30, [sp], #16
+
+got_data_buffer:
+    // x0 = data buffer address (passed by Stage 0 or allocated above)
+    // x28 = code base address
+    adr     x28, Lbase
+    mov     x25, x0             // DATA base pointer
+
+    // Initialize pointers using DATA region
+    // Data layout in x25 region:
+    //   +0x0000: var_STATE (8 bytes)
+    //   +0x0008: var_HERE (8 bytes) - holds offset into data region
+    //   +0x0010: var_BASE (8 bytes)
+    //   +0x0018: var_LATEST (8 bytes) - holds offset from Lbase
+    //   +0x0020: input_buffer (256 bytes)
+    //   +0x0120: word_buffer (64 bytes)
+    //   +0x0160: return_stack (8192 bytes)
+    //   +0x2160: data_space (up to 0x8000)
+    //   +0x8000: param_stack (8192 bytes) - grows downward
+
+    // Initialize STATE = 0
+    str     xzr, [x25, #0]
+
+    // Initialize HERE to point to data_space (0x160 + 8192 = 0x2160)
+    mov     x0, #0x160
+    add     x0, x0, #8192
+    str     x0, [x25, #8]
+
+    // Initialize BASE = 10
+    mov     x0, #10
+    str     x0, [x25, #16]
+
+    // Initialize LATEST to point to name_QUIT (offset from Lbase)
+    adr     x0, name_QUIT
+    sub     x0, x0, x28
+    str     x0, [x25, #24]
+
+    // Set up return stack pointer
+    mov     x21, #0x160
+    add     x21, x21, #8192
+    add     x21, x21, x25
+
+    // Set up parameter stack pointer
+    mov     x27, #0x8000
+    add     x27, x27, #8192
+    add     x27, x27, x25
+
+    // Load initial volatile state into registers
+    ldr     x0, [x25, #8]
+    add     x22, x25, x0         // x22 = absolute HERE
+    
+    ldr     x0, [x25, #24]
+    add     x23, x28, x0         // x23 = absolute LATEST
+
+    mov     x24, #0             // STATE = interpret
+
+    // Start with QUIT
+    adr     x19, cold_start
+    b       next_trampoline
 
 // Constants
-.equ F_IMMED,    0x80    // Immediate flag
-.equ F_HIDDEN,   0x40    // Hidden flag
-.equ F_LENMASK,  0x1F    // Length mask
-
-// macOS syscall numbers
+.equ F_IMMED,    0x80
+.equ F_LENMASK,  0x1F
 .equ SYS_exit,   1
 .equ SYS_read,   3
 .equ SYS_write,  4
 
-// Buffer sizes
-.equ RETURN_STACK_SIZE, 8192
-.equ DATA_SPACE_SIZE,   65536
-.equ INPUT_BUFFER_SIZE, 256
+// Data region offsets
+.equ OFF_STATE,  0
+.equ OFF_HERE,   8
+.equ OFF_BASE,   16
+.equ OFF_LATEST, 24
+.equ OFF_INPUT,  0x20
+.equ OFF_WORD,   0x120
+.equ OFF_RSTACK, 0x160
 
-// ============================================
-// Macros for defining Forth words
-// ============================================
+// NEXT: Offset-based threading
+next_trampoline:
+    ldr     x20, [x19], #8      // Load word offset
+    add     x20, x20, x28       // W = Lbase + offset
+    ldr     x1, [x20]           // Load codeword offset
+    add     x1, x1, x28         // Code address
+    br      x1
 
 .macro NEXT
-    ldr     x20, [x19], #8      // W = *IP++
-    ldr     x1, [x20]           // Get codeword
-    br      x1                  // Jump to code
+    ldr     x20, [x19], #8
+    add     x20, x20, x28
+    ldr     x1, [x20]
+    add     x1, x1, x28
+    br      x1
 .endm
 
 .macro PUSHRSP reg
-    str     \reg, [x21, #-8]!   // Push to return stack
+    str     \reg, [x21, #-8]!
 .endm
 
 .macro POPRSP reg
-    ldr     \reg, [x21], #8     // Pop from return stack
+    ldr     \reg, [x21], #8
 .endm
 
-.macro PUSH reg
-    str     x0, [sp, #-8]!      // Push TOS to stack
-    mov     x0, \reg            // New value becomes TOS
-.endm
-
-.macro POP reg
-    mov     \reg, x0            // Get TOS
-    ldr     x0, [sp], #8        // Pop new TOS
-.endm
-
-// ============================================
-// Data Section
-// ============================================
-.data
-
-// State variables
-var_STATE:      .quad 0         // 0=interpret, 1=compile
-var_HERE:       .quad data_space
-var_LATEST:     .quad name_BYE  // Points to last defined word
-var_BASE:       .quad 10        // Number base
-
-// Input buffer
-input_buffer:   .space INPUT_BUFFER_SIZE
-input_ptr:      .quad input_buffer
-input_end:      .quad input_buffer
-
-// Return stack
-.align 4
-return_stack_bottom:
-    .space RETURN_STACK_SIZE
-return_stack_top:
-
-// Data space (for dictionary growth)
-.align 4
-data_space:
-    .space DATA_SPACE_SIZE
-
-// Word buffer for parsing
-word_buffer:    .space 64
-
-// ============================================
-// Code Section
-// ============================================
-.text
-
-// Entry point
-_main:
-    // Initialize stacks and pointers
-    adrp    x21, return_stack_top@PAGE
-    add     x21, x21, return_stack_top@PAGEOFF
-
-    adrp    x22, var_HERE@PAGE
-    add     x22, x22, var_HERE@PAGEOFF
-    ldr     x22, [x22]
-
-    adrp    x23, var_LATEST@PAGE
-    add     x23, x23, var_LATEST@PAGEOFF
-    ldr     x23, [x23]
-
-    mov     x24, #0             // STATE = interpret
-
-    // Start with QUIT (the main interpreter loop)
-    adrp    x19, cold_start@PAGE
-    add     x19, x19, cold_start@PAGEOFF
-    NEXT
-
-// Cold start - jumps to QUIT
 cold_start:
-    .quad code_QUIT
+    .quad code_QUIT - Lbase
 
-// ============================================
-// DOCOL - Enter a colon definition
-// ============================================
+// DOCOL - enter a colon definition
+// x20 = W = address of code field (already resolved by NEXT)
+// Thread starts immediately after the codeword
 DOCOL:
-    PUSHRSP x19                 // Save IP on return stack
-    add     x19, x20, #8        // IP = word body (after codeword)
+    PUSHRSP x19
+    add     x19, x20, #8        // IP = code field + 8 = first thread entry
     NEXT
 
-// ============================================
-// Primitive Words
-// ============================================
+// ============================================ 
+// Primitives
+// ============================================ 
 
-// DROP ( a -- )
 .align 4
 name_DROP:
-    .quad 0                     // Link (will be set)
-    .byte 4                     // Length
-    .ascii "DROP"
-    .align 3
+    .quad 0
+    .byte 4, 'D','R','O','P', 0, 0, 0
 code_DROP:
-    .quad do_DROP
+    .quad do_DROP - Lbase
 do_DROP:
-    ldr     x0, [sp], #8        // Pop new TOS
+    add     x27, x27, #8
     NEXT
 
-// DUP ( a -- a a )
 .align 4
 name_DUP:
-    .quad name_DROP
-    .byte 3
-    .ascii "DUP"
-    .align 3
+    .quad name_DROP - Lbase
+    .byte 3, 'D','U','P', 0, 0, 0, 0
 code_DUP:
-    .quad do_DUP
+    .quad do_DUP - Lbase
 do_DUP:
-    str     x0, [sp, #-8]!      // Push TOS
+    ldr     x0, [x27]
+    str     x0, [x27, #-8]!
     NEXT
 
-// SWAP ( a b -- b a )
 .align 4
 name_SWAP:
-    .quad name_DUP
-    .byte 4
-    .ascii "SWAP"
-    .align 3
+    .quad name_DUP - Lbase
+    .byte 4, 'S','W','A','P', 0, 0, 0
 code_SWAP:
-    .quad do_SWAP
+    .quad do_SWAP - Lbase
 do_SWAP:
-    ldr     x1, [sp]            // Get second
-    str     x0, [sp]            // Store first
-    mov     x0, x1              // TOS = second
+    ldr     x0, [x27]
+    ldr     x1, [x27, #8]
+    str     x0, [x27, #8]
+    str     x1, [x27]
     NEXT
 
-// OVER ( a b -- a b a )
 .align 4
 name_OVER:
-    .quad name_SWAP
-    .byte 4
-    .ascii "OVER"
-    .align 3
+    .quad name_SWAP - Lbase
+    .byte 4, 'O','V','E','R', 0, 0, 0
 code_OVER:
-    .quad do_OVER
+    .quad do_OVER - Lbase
 do_OVER:
-    ldr     x1, [sp]            // Get second
-    str     x0, [sp, #-8]!      // Push TOS
-    mov     x0, x1              // TOS = second (original a)
+    ldr     x0, [x27, #8]
+    str     x0, [x27, #-8]!
     NEXT
 
-// ROT ( a b c -- b c a )
-.align 4
-name_ROT:
-    .quad name_OVER
-    .byte 3
-    .ascii "ROT"
-    .align 3
-code_ROT:
-    .quad do_ROT
-do_ROT:
-    ldr     x1, [sp]            // b
-    ldr     x2, [sp, #8]        // a
-    str     x0, [sp, #8]        // c -> where a was
-    str     x2, [sp]            // a -> where b was
-    mov     x0, x1              // TOS = b
-    NEXT
-
-// + ( a b -- a+b )
 .align 4
 name_PLUS:
-    .quad name_ROT
-    .byte 1
-    .ascii "+"
-    .align 3
+    .quad name_OVER - Lbase
+    .byte 1, '+', 0, 0, 0, 0, 0, 0
 code_PLUS:
-    .quad do_PLUS
+    .quad do_PLUS - Lbase
 do_PLUS:
-    ldr     x1, [sp], #8
-    add     x0, x1, x0
+    ldr     x0, [x27], #8
+    ldr     x1, [x27]
+    add     x1, x1, x0
+    str     x1, [x27]
     NEXT
 
-// - ( a b -- a-b )
 .align 4
 name_MINUS:
-    .quad name_PLUS
-    .byte 1
-    .ascii "-"
-    .align 3
+    .quad name_PLUS - Lbase
+    .byte 1, '-', 0, 0, 0, 0, 0, 0
 code_MINUS:
-    .quad do_MINUS
+    .quad do_MINUS - Lbase
 do_MINUS:
-    ldr     x1, [sp], #8
-    sub     x0, x1, x0
+    ldr     x0, [x27], #8
+    ldr     x1, [x27]
+    sub     x1, x1, x0
+    str     x1, [x27]
     NEXT
 
-// * ( a b -- a*b )
 .align 4
 name_STAR:
-    .quad name_MINUS
-    .byte 1
-    .ascii "*"
-    .align 3
+    .quad name_MINUS - Lbase
+    .byte 1, '*', 0, 0, 0, 0, 0, 0
 code_STAR:
-    .quad do_STAR
+    .quad do_STAR - Lbase
 do_STAR:
-    ldr     x1, [sp], #8
-    mul     x0, x1, x0
+    ldr     x0, [x27], #8
+    ldr     x1, [x27]
+    mul     x1, x1, x0
+    str     x1, [x27]
     NEXT
 
-// / ( a b -- a/b )
-.align 4
-name_SLASH:
-    .quad name_STAR
-    .byte 1
-    .ascii "/"
-    .align 3
-code_SLASH:
-    .quad do_SLASH
-do_SLASH:
-    ldr     x1, [sp], #8
-    sdiv    x0, x1, x0
-    NEXT
-
-// MOD ( a b -- a%b )
-.align 4
-name_MOD:
-    .quad name_SLASH
-    .byte 3
-    .ascii "MOD"
-    .align 3
-code_MOD:
-    .quad do_MOD
-do_MOD:
-    ldr     x1, [sp], #8
-    sdiv    x2, x1, x0
-    msub    x0, x2, x0, x1      // x0 = x1 - (x2 * x0) = remainder
-    NEXT
-
-// = ( a b -- flag )
 .align 4
 name_EQU:
-    .quad name_MOD
-    .byte 1
-    .ascii "="
-    .align 3
+    .quad name_STAR - Lbase
+    .byte 1, '=', 0, 0, 0, 0, 0, 0
 code_EQU:
-    .quad do_EQU
+    .quad do_EQU - Lbase
 do_EQU:
-    ldr     x1, [sp], #8
+    ldr     x0, [x27], #8
+    ldr     x1, [x27]
     cmp     x1, x0
     cset    x0, eq
-    neg     x0, x0              // Forth true = -1
-    NEXT
-
-// < ( a b -- flag )
-.align 4
-name_LT:
-    .quad name_EQU
-    .byte 1
-    .ascii "<"
-    .align 3
-code_LT:
-    .quad do_LT
-do_LT:
-    ldr     x1, [sp], #8
-    cmp     x1, x0
-    cset    x0, lt
     neg     x0, x0
+    str     x0, [x27]
     NEXT
 
-// > ( a b -- flag )
-.align 4
-name_GT:
-    .quad name_LT
-    .byte 1
-    .ascii ">"
-    .align 3
-code_GT:
-    .quad do_GT
-do_GT:
-    ldr     x1, [sp], #8
-    cmp     x1, x0
-    cset    x0, gt
-    neg     x0, x0
-    NEXT
-
-// AND ( a b -- a&b )
 .align 4
 name_AND:
-    .quad name_GT
-    .byte 3
-    .ascii "AND"
-    .align 3
+    .quad name_EQU - Lbase
+    .byte 3, 'A','N','D', 0, 0, 0, 0
 code_AND:
-    .quad do_AND
+    .quad do_AND - Lbase
 do_AND:
-    ldr     x1, [sp], #8
-    and     x0, x1, x0
+    ldr     x0, [x27], #8
+    ldr     x1, [x27]
+    and     x1, x1, x0
+    str     x1, [x27]
     NEXT
 
-// OR ( a b -- a|b )
 .align 4
 name_OR:
-    .quad name_AND
-    .byte 2
-    .ascii "OR"
-    .align 3
+    .quad name_AND - Lbase
+    .byte 2, 'O','R', 0, 0, 0, 0, 0
 code_OR:
-    .quad do_OR
+    .quad do_OR - Lbase
 do_OR:
-    ldr     x1, [sp], #8
-    orr     x0, x1, x0
+    ldr     x0, [x27], #8
+    ldr     x1, [x27]
+    orr     x1, x1, x0
+    str     x1, [x27]
     NEXT
 
-// XOR ( a b -- a^b )
 .align 4
 name_XOR:
-    .quad name_OR
-    .byte 3
-    .ascii "XOR"
-    .align 3
+    .quad name_OR - Lbase
+    .byte 3, 'X','O','R', 0, 0, 0, 0
 code_XOR:
-    .quad do_XOR
+    .quad do_XOR - Lbase
 do_XOR:
-    ldr     x1, [sp], #8
-    eor     x0, x1, x0
+    ldr     x0, [x27], #8
+    ldr     x1, [x27]
+    eor     x1, x1, x0
+    str     x1, [x27]
     NEXT
 
-// INVERT ( a -- ~a )
 .align 4
-name_INVERT:
-    .quad name_XOR
-    .byte 6
-    .ascii "INVERT"
-    .align 3
-code_INVERT:
-    .quad do_INVERT
-do_INVERT:
-    mvn     x0, x0
+name_LSHIFT:
+    .quad name_XOR - Lbase
+    .byte 6, 'L','S','H','I','F','T', 0
+code_LSHIFT:
+    .quad do_LSHIFT - Lbase
+do_LSHIFT:
+    ldr     x0, [x27], #8
+    ldr     x1, [x27]
+    lsl     x1, x1, x0
+    str     x1, [x27]
     NEXT
 
-// @ ( addr -- value )
+.align 4
+name_RSHIFT:
+    .quad name_LSHIFT - Lbase
+    .byte 6, 'R','S','H','I','F','T', 0
+code_RSHIFT:
+    .quad do_RSHIFT - Lbase
+do_RSHIFT:
+    ldr     x0, [x27], #8
+    ldr     x1, [x27]
+    lsr     x1, x1, x0
+    str     x1, [x27]
+    NEXT
+
 .align 4
 name_FETCH:
-    .quad name_INVERT
-    .byte 1
-    .ascii "@"
-    .align 3
+    .quad name_RSHIFT - Lbase
+    .byte 1, '@', 0, 0, 0, 0, 0, 0
 code_FETCH:
-    .quad do_FETCH
+    .quad do_FETCH - Lbase
 do_FETCH:
+    ldr     x0, [x27]
     ldr     x0, [x0]
+    str     x0, [x27]
     NEXT
 
-// ! ( value addr -- )
-.align 4
-name_STORE:
-    .quad name_FETCH
-    .byte 1
-    .ascii "!"
-    .align 3
-code_STORE:
-    .quad do_STORE
-do_STORE:
-    ldr     x1, [sp], #8        // value
-    str     x1, [x0]            // store
-    ldr     x0, [sp], #8        // pop new TOS
-    NEXT
-
-// C@ ( addr -- byte )
 .align 4
 name_CFETCH:
-    .quad name_STORE
-    .byte 2
-    .ascii "C@"
-    .align 3
+    .quad name_FETCH - Lbase
+    .byte 2, 'C','@', 0, 0, 0, 0, 0
 code_CFETCH:
-    .quad do_CFETCH
+    .quad do_CFETCH - Lbase
 do_CFETCH:
+    ldr     x0, [x27]
     ldrb    w0, [x0]
+    str     x0, [x27]
     NEXT
 
-// C! ( byte addr -- )
+.align 4
+name_STORE:
+    .quad name_CFETCH - Lbase
+    .byte 1, '!', 0, 0, 0, 0, 0, 0
+code_STORE:
+    .quad do_STORE - Lbase
+do_STORE:
+    ldr     x0, [x27], #8
+    ldr     x1, [x27], #8
+    str     x1, [x0]
+    NEXT
+
 .align 4
 name_CSTORE:
-    .quad name_CFETCH
-    .byte 2
-    .ascii "C!"
-    .align 3
+    .quad name_STORE - Lbase
+    .byte 2, 'C','!', 0, 0, 0, 0, 0
 code_CSTORE:
-    .quad do_CSTORE
+    .quad do_CSTORE - Lbase
 do_CSTORE:
-    ldr     x1, [sp], #8        // byte
-    strb    w1, [x0]            // store
-    ldr     x0, [sp], #8        // pop new TOS
+    ldr     x0, [x27], #8
+    ldr     x1, [x27], #8
+    strb    w1, [x0]
     NEXT
 
-// >R ( a -- ) (R: -- a )
 .align 4
 name_TOR:
-    .quad name_CSTORE
-    .byte 2
-    .ascii ">R"
-    .align 3
+    .quad name_CSTORE - Lbase
+    .byte 2, '>','R', 0, 0, 0, 0, 0
 code_TOR:
-    .quad do_TOR
+    .quad do_TOR - Lbase
 do_TOR:
-    PUSHRSP x0
-    ldr     x0, [sp], #8
+    ldr     x0, [x27], #8
+    str     x0, [x21, #-8]!
     NEXT
 
-// R> ( -- a ) (R: a -- )
 .align 4
 name_FROMR:
-    .quad name_TOR
-    .byte 2
-    .ascii "R>"
-    .align 3
+    .quad name_TOR - Lbase
+    .byte 2, 'R','>', 0, 0, 0, 0, 0
 code_FROMR:
-    .quad do_FROMR
+    .quad do_FROMR - Lbase
 do_FROMR:
-    str     x0, [sp, #-8]!
-    POPRSP  x0
+    ldr     x0, [x21], #8
+    str     x0, [x27, #-8]!
     NEXT
 
-// R@ ( -- a ) (R: a -- a )
-.align 4
-name_RFETCH:
-    .quad name_FROMR
-    .byte 2
-    .ascii "R@"
-    .align 3
-code_RFETCH:
-    .quad do_RFETCH
-do_RFETCH:
-    str     x0, [sp, #-8]!
-    ldr     x0, [x21]
-    NEXT
-
-// EMIT ( c -- )
 .align 4
 name_EMIT:
-    .quad name_RFETCH
-    .byte 4
-    .ascii "EMIT"
-    .align 3
+    .quad name_FROMR - Lbase
+    .byte 4, 'E','M','I','T', 0, 0, 0
 code_EMIT:
-    .quad do_EMIT
+    .quad do_EMIT - Lbase
 do_EMIT:
-    // Write one character to stdout
-    str     x0, [sp, #-8]!      // Push char to stack as buffer
-    mov     x0, #1              // fd = stdout
-    mov     x1, sp              // buf = stack
-    mov     x2, #1              // count = 1
+    ldr     x0, [x27], #8
+    strb    w0, [x25, #OFF_WORD]
+    mov     x0, #1
+    add     x1, x25, #OFF_WORD
+    mov     x2, #1
     mov     x16, #SYS_write
     svc     #0x80
-    add     sp, sp, #8          // Clean up buffer
-    ldr     x0, [sp], #8        // Pop new TOS
     NEXT
 
-// KEY ( -- c )
+.align 4
+name_TYPE:
+    .quad name_EMIT - Lbase
+    .byte 4, 'T','Y','P','E', 0, 0, 0
+code_TYPE:
+    .quad do_TYPE - Lbase
+do_TYPE:
+    ldr     x2, [x27], #8
+    ldr     x1, [x27], #8
+    mov     x0, #1
+    mov     x16, #SYS_write
+    svc     #0x80
+    NEXT
+
 .align 4
 name_KEY:
-    .quad name_EMIT
-    .byte 3
-    .ascii "KEY"
-    .align 3
+    .quad name_TYPE - Lbase
+    .byte 3, 'K','E','Y', 0, 0, 0, 0
 code_KEY:
-    .quad do_KEY
+    .quad do_KEY - Lbase
 do_KEY:
-    str     x0, [sp, #-8]!      // Push current TOS
-    sub     sp, sp, #8          // Allocate buffer
-    mov     x0, #0              // fd = stdin
-    mov     x1, sp              // buf = stack
-    mov     x2, #1              // count = 1
+    mov     x0, #0
+    add     x1, x25, #OFF_WORD
+    mov     x2, #1
     mov     x16, #SYS_read
     svc     #0x80
-    ldrb    w0, [sp]            // Load char read
-    add     sp, sp, #8          // Clean up buffer
+    ldrb    w0, [x25, #OFF_WORD]
+    str     x0, [x27, #-8]!
     NEXT
 
-// EXIT ( -- ) return from word
-.align 4
-name_EXIT:
-    .quad name_KEY
-    .byte 4
-    .ascii "EXIT"
-    .align 3
-code_EXIT:
-    .quad do_EXIT
-do_EXIT:
-    POPRSP  x19                 // Pop return address
-    NEXT
-
-// LIT ( -- n ) push next cell as literal
 .align 4
 name_LIT:
-    .quad name_EXIT
-    .byte 3
-    .ascii "LIT"
-    .align 3
+    .quad name_KEY - Lbase
+    .byte 3, 'L','I','T', 0, 0, 0, 0
 code_LIT:
-    .quad do_LIT
+    .quad do_LIT - Lbase
 do_LIT:
-    str     x0, [sp, #-8]!      // Push current TOS
-    ldr     x0, [x19], #8       // Load literal, advance IP
+    ldr     x0, [x19], #8
+    str     x0, [x27, #-8]!
     NEXT
 
-// BRANCH ( -- ) unconditional branch
+.align 4
+name_EXIT:
+    .quad name_LIT - Lbase
+    .byte 4, 'E','X','I','T', 0, 0, 0
+code_EXIT:
+    .quad do_EXIT - Lbase
+do_EXIT:
+    POPRSP  x19
+    NEXT
+
 .align 4
 name_BRANCH:
-    .quad name_LIT
-    .byte 6
-    .ascii "BRANCH"
-    .align 3
+    .quad name_EXIT - Lbase
+    .byte 6, 'B','R','A','N','C','H', 0
 code_BRANCH:
-    .quad do_BRANCH
+    .quad do_BRANCH - Lbase
 do_BRANCH:
-    ldr     x1, [x19]           // Get offset
-    add     x19, x19, x1        // IP += offset
+    ldr     x1, [x19]
+    add     x19, x19, x1
     NEXT
 
-// 0BRANCH ( flag -- ) conditional branch
 .align 4
-name_ZBRANCH:
-    .quad name_BRANCH
-    .byte 7
-    .ascii "0BRANCH"
-    .align 3
-code_ZBRANCH:
-    .quad do_ZBRANCH
-do_ZBRANCH:
+name_0BRANCH:
+    .quad name_BRANCH - Lbase
+    .byte 7, '0','B','R','A','N','C','H'
+code_0BRANCH:
+    .quad do_0BRANCH - Lbase
+do_0BRANCH:
+    ldr     x0, [x27], #8
     cmp     x0, #0
-    ldr     x0, [sp], #8        // Pop flag
-    b.eq    do_BRANCH           // If zero, branch
-    add     x19, x19, #8        // Skip offset
+    b.eq    do_BRANCH
+    add     x19, x19, #8
     NEXT
 
-// HERE ( -- addr )
 .align 4
 name_HERE:
-    .quad name_ZBRANCH
-    .byte 4
-    .ascii "HERE"
-    .align 3
+    .quad name_0BRANCH - Lbase
+    .byte 4, 'H','E','R','E', 0, 0, 0
 code_HERE:
-    .quad do_HERE
+    .quad do_HERE - Lbase
 do_HERE:
-    str     x0, [sp, #-8]!
-    mov     x0, x22
+    str     x22, [x27, #-8]!
     NEXT
 
-// LATEST ( -- addr )
-.align 4
-name_LATEST:
-    .quad name_HERE
-    .byte 6
-    .ascii "LATEST"
-    .align 3
-code_LATEST:
-    .quad do_LATEST
-do_LATEST:
-    str     x0, [sp, #-8]!
-    mov     x0, x23
-    NEXT
-
-// STATE ( -- addr )
-.align 4
-name_STATE:
-    .quad name_LATEST
-    .byte 5
-    .ascii "STATE"
-    .align 3
-code_STATE:
-    .quad do_STATE
-do_STATE:
-    str     x0, [sp, #-8]!
-    adrp    x0, var_STATE@PAGE
-    add     x0, x0, var_STATE@PAGEOFF
-    NEXT
-
-// BASE ( -- addr )
-.align 4
-name_BASE:
-    .quad name_STATE
-    .byte 4
-    .ascii "BASE"
-    .align 3
-code_BASE:
-    .quad do_BASE
-do_BASE:
-    str     x0, [sp, #-8]!
-    adrp    x0, var_BASE@PAGE
-    add     x0, x0, var_BASE@PAGEOFF
-    NEXT
-
-// , ( n -- ) compile cell
 .align 4
 name_COMMA:
-    .quad name_BASE
-    .byte 1
-    .ascii ","
-    .align 3
+    .quad name_HERE - Lbase
+    .byte 1, ',', 0, 0, 0, 0, 0, 0
 code_COMMA:
-    .quad do_COMMA
+    .quad do_COMMA - Lbase
 do_COMMA:
-    str     x0, [x22], #8       // *HERE++ = n
-    ldr     x0, [sp], #8
+    ldr     x0, [x27], #8
+    str     x0, [x22], #8
+    sub     x0, x22, x25
+    str     x0, [x25, #OFF_HERE]
     NEXT
 
-// C, ( c -- ) compile byte
 .align 4
-name_CCOMMA:
-    .quad name_COMMA
-    .byte 2
-    .ascii "C,"
-    .align 3
-code_CCOMMA:
-    .quad do_CCOMMA
-do_CCOMMA:
-    strb    w0, [x22], #1       // *HERE++ = c
-    ldr     x0, [sp], #8
+name_ALLOT:
+    .quad name_COMMA - Lbase
+    .byte 5, 'A','L','L','O','T', 0, 0, 0
+code_ALLOT:
+    .quad do_ALLOT - Lbase
+do_ALLOT:
+    ldr     x0, [x27], #8
+    add     x22, x22, x0
+    sub     x0, x22, x25
+    str     x0, [x25, #OFF_HERE]
     NEXT
 
-// EXECUTE ( xt -- ) execute word
 .align 4
-name_EXECUTE:
-    .quad name_CCOMMA
-    .byte 7
-    .ascii "EXECUTE"
-    .align 3
-code_EXECUTE:
-    .quad do_EXECUTE
-do_EXECUTE:
-    mov     x20, x0             // W = xt
-    ldr     x0, [sp], #8        // Pop new TOS
-    ldr     x1, [x20]           // Get codeword
-    br      x1                  // Execute
+name_STATE:
+    .quad name_ALLOT - Lbase
+    .byte 5, 'S','T','A','T','E', 0, 0, 0
+code_STATE:
+    .quad do_STATE - Lbase
+do_STATE:
+    add     x0, x25, #OFF_STATE
+    str     x0, [x27, #-8]!
+    NEXT
 
-// BYE ( -- ) exit program
+.align 4
+name_LATEST:
+    .quad name_STATE - Lbase
+    .byte 6, 'L','A','T','E','S','T', 0, 0
+code_LATEST:
+    .quad do_LATEST - Lbase
+do_LATEST:
+    add     x0, x25, #OFF_LATEST
+    str     x0, [x27, #-8]!
+    NEXT
+
+.align 4
+name_IMMEDIATE:
+    .quad name_LATEST - Lbase
+    .byte 9, 'I','M','M','E','D','I','A','T','E', 0, 0, 0, 0, 0, 0
+code_IMMEDIATE:
+    .quad do_IMMEDIATE - Lbase
+do_IMMEDIATE:
+    ldrb    w0, [x23, #8]
+    orr     w0, w0, #F_IMMED
+    strb    w0, [x23, #8]
+    NEXT
+
+.align 4
+name_LBRACKET:
+    .quad name_IMMEDIATE - Lbase
+    .byte 1 | F_IMMED, '[', 0, 0, 0, 0, 0, 0
+code_LBRACKET:
+    .quad do_LBRACKET - Lbase
+do_LBRACKET:
+    mov     x24, #0
+    str     x24, [x25, #OFF_STATE]
+    NEXT
+
+.align 4
+name_RBRACKET:
+    .quad name_LBRACKET - Lbase
+    .byte 1, ']', 0, 0, 0, 0, 0, 0
+code_RBRACKET:
+    .quad do_RBRACKET - Lbase
+do_RBRACKET:
+    mov     x24, #1
+    str     x24, [x25, #OFF_STATE]
+    NEXT
+
+.align 4
+name_COLON:
+    .quad name_RBRACKET - Lbase
+    .byte 1, ':', 0, 0, 0, 0, 0, 0
+code_COLON:
+    .quad do_COLON - Lbase
+do_COLON:
+    bl      read_word
+    mov     x2, x22
+    sub     x3, x23, x28
+    str     x3, [x22], #8
+    mov     x23, x2
+    sub     x3, x23, x28
+    str     x3, [x25, #OFF_LATEST]
+    strb    w1, [x22], #1
+1:  cbz     x1, 2f
+    ldrb    w3, [x0], #1
+    strb    w3, [x22], #1
+    sub     x1, x1, #1
+    b       1b
+2:  add     x22, x22, #7
+    and     x22, x22, #~7
+    adr     x1, DOCOL
+    sub     x1, x1, x28
+    str     x1, [x22], #8
+    sub     x0, x22, x25
+    str     x0, [x25, #OFF_HERE]
+    mov     x24, #1
+    str     x24, [x25, #OFF_STATE]
+    NEXT
+
+.align 4
+name_SEMICOLON:
+    .quad name_COLON - Lbase
+    .byte 1 | F_IMMED, ';', 0, 0, 0, 0, 0, 0
+code_SEMICOLON:
+    .quad do_SEMICOLON - Lbase
+do_SEMICOLON:
+    adr     x1, code_EXIT       // Compile code field offset, not name
+    sub     x1, x1, x28
+    str     x1, [x22], #8
+    sub     x0, x22, x25
+    str     x0, [x25, #OFF_HERE]
+    mov     x24, #0
+    str     x24, [x25, #OFF_STATE]
+    NEXT
+
 .align 4
 name_BYE:
-    .quad name_EXECUTE
-    .byte 3
-    .ascii "BYE"
-    .align 3
+    .quad name_SEMICOLON - Lbase
+    .byte 3, 'B','Y','E', 0, 0, 0, 0
 code_BYE:
-    .quad do_BYE
+    .quad do_BYE - Lbase
 do_BYE:
     mov     x0, #0
     mov     x16, #SYS_exit
     svc     #0x80
 
-// ============================================
-// QUIT - Main interpreter loop
-// ============================================
+.align 4
+name_TICK:
+    .quad name_BYE - Lbase
+    .byte 1, '\'', 0, 0, 0, 0, 0, 0
+code_TICK:
+    .quad do_TICK - Lbase
+do_TICK:
+    bl      read_word
+    bl      find_word
+    sub     x0, x0, x28
+    str     x0, [x27, #-8]!
+    NEXT
+
+.align 4
+name_BACKSLASH:
+    .quad name_TICK - Lbase
+    .byte 1 | F_IMMED, '\\', 0, 0, 0, 0, 0, 0
+code_BACKSLASH:
+    .quad do_BACKSLASH - Lbase
+do_BACKSLASH:
+1:  bl      read_char
+    cmp     w0, #0xA // Newline character
+    b.eq    2f
+    cmp     w0, #-1
+    b.eq    2f
+    b       1b
+2:  NEXT
+
+.align 4
+name_PAREN:
+    .quad name_BACKSLASH - Lbase
+    .byte 1 | F_IMMED, '(', 0, 0, 0, 0, 0, 0
+code_PAREN:
+    .quad do_PAREN - Lbase
+do_PAREN:
+1:  bl      read_char
+    cmp     w0, #')'
+    b.eq    2f
+    cmp     w0, #-1
+    b.eq    2f
+    b       1b
+2:  NEXT
+
+.align 4
+xt_STOP:
+    .quad code_STOP - Lbase      // Must be code field offset, not name
+
+.align 4
+name_STOP:
+    .quad name_PAREN - Lbase
+    .byte 4, 'S','T','O','P', 0, 0, 0
+code_STOP:
+    .quad do_STOP - Lbase
+do_STOP:
+    b       quit_loop
+
 .align 4
 name_QUIT:
-    .quad name_BYE
-    .byte 4
-    .ascii "QUIT"
-    .align 3
+    .quad name_STOP - Lbase
+    .byte 4, 'Q','U','I','T', 0, 0, 0
 code_QUIT:
-    .quad do_QUIT
+    .quad do_QUIT - Lbase
 do_QUIT:
-    // Reset return stack
-    adrp    x21, return_stack_top@PAGE
-    add     x21, x21, return_stack_top@PAGEOFF
-    mov     x24, #0             // STATE = interpret
+    mov     x21, #0x160
+    add     x21, x21, #8192
+    add     x21, x21, x25
+    mov     x24, #0
+    str     x24, [x25, #OFF_STATE]
 
 quit_loop:
-    // Print prompt if interpreting
-    cbnz    x24, 1f
-    mov     x1, #'>'
-    strb    w1, [sp, #-8]!
-    mov     x0, #1
-    mov     x1, sp
-    mov     x2, #1
-    mov     x16, #SYS_write
-    svc     #0x80
-    mov     x1, #' '
-    strb    w1, [sp]
-    mov     x0, #1
-    mov     x1, sp
-    mov     x2, #1
-    mov     x16, #SYS_write
-    svc     #0x80
-    add     sp, sp, #8
-
-1:  // Read and process words
     bl      read_word
-    cbz     x0, quit_loop       // Empty word, try again
+    cbz     x1, quit_loop
 
-    // Try to find word in dictionary
     bl      find_word
     cbnz    x0, found_word
 
-    // Not found - try to parse as number
+    mov     x0, x1
+    mov     x1, x2
     bl      parse_number
-    cbz     x1, word_not_found  // x1=0 means parse failed
+    cbz     x1, word_not_found
 
-    // It's a number
-    cbz     x24, quit_loop      // If interpreting, number is on stack, continue
-    // Compiling: emit LIT followed by number
-    adrp    x1, code_LIT@PAGE
-    add     x1, x1, code_LIT@PAGEOFF
+    ldr     x24, [x25, #OFF_STATE]
+    cbz     x24, quit_loop
+    adr     x1, code_LIT        // Compile code field offset, not name
+    sub     x1, x1, x28
     str     x1, [x22], #8
+    ldr     x0, [x27], #8
     str     x0, [x22], #8
-    ldr     x0, [sp], #8        // Pop the number we pushed
     b       quit_loop
 
 found_word:
-    // x0 = dictionary entry
-    // Check if immediate or compiling
-    ldrb    w1, [x0, #8]        // flags byte
+    ldrb    w1, [x0, #8]
     tst     w1, #F_IMMED
-    b.ne    execute_word        // Immediate: always execute
+    b.ne    execute_word
 
-    cbz     x24, execute_word   // Interpreting: execute
+    ldr     x24, [x25, #OFF_STATE]
+    cbz     x24, execute_word
 
-    // Compiling: append to definition
-    add     x1, x0, #8          // Point to flags
-2:  ldrb    w2, [x1], #1        // Skip name
+    // Navigate from name header to code field
+    // x0 = name header address
+    add     x1, x0, #8          // Skip link
+    ldrb    w2, [x1], #1        // Load length byte
     and     w2, w2, #F_LENMASK
-    add     x1, x1, x2
-    add     x1, x1, #7          // Align up
+    add     x1, x1, x2          // Skip name
+    add     x1, x1, #7          // Align to 8 bytes
     and     x1, x1, #~7
-    str     x1, [x22], #8       // Compile codeword address
+    // x1 = code field address
+    sub     x1, x1, x28         // Convert to offset
+    str     x1, [x22], #8
     b       quit_loop
 
 execute_word:
-    // Find codeword and execute
-    add     x20, x0, #8         // Skip link
-3:  ldrb    w1, [x20], #1       // Get length
+    adr     x19, xt_STOP
+    add     x20, x0, #8
+    ldrb    w1, [x20], #1
     and     w1, w1, #F_LENMASK
-    add     x20, x20, x1        // Skip name
-    add     x20, x20, #7        // Align
+    add     x20, x20, x1
+    add     x20, x20, #7
     and     x20, x20, #~7
-    ldr     x1, [x20]           // Get codeword
-    br      x1                  // Execute (will NEXT back to quit_loop)
+    ldr     x1, [x20]
+    add     x1, x1, x28
+    br      x1
 
 word_not_found:
-    // Print error and continue
-    adrp    x1, err_msg@PAGE
-    add     x1, x1, err_msg@PAGEOFF
-    mov     x0, #2              // stderr
-    mov     x2, #10             // len
+    adr     x1, err_msg
+    mov     x0, #2
+    mov     x2, #2
     mov     x16, #SYS_write
     svc     #0x80
     b       quit_loop
 
-// ============================================
-// Subroutines
-// ============================================
-
-// read_word: Read next word from input
-// Returns: x0 = address of word, x1 = length (0 if EOF/empty)
+// Helpers
 read_word:
     stp     x29, x30, [sp, #-16]!
-
-    // Skip whitespace
+    stp     x9, x10, [sp, #-16]!
+    add     x9, x25, #OFF_WORD
+    mov     x10, x9
 1:  bl      read_char
     cmp     w0, #-1
-    b.eq    3f                  // EOF
+    b.eq    3f
     cmp     w0, #' '
-    b.le    1b                  // Skip space, tab, newline
-
-    // Read word into buffer
-    adrp    x2, word_buffer@PAGE
-    add     x2, x2, word_buffer@PAGEOFF
-    mov     x3, x2              // Save start
-2:  strb    w0, [x2], #1        // Store char
+    b.le    1b
+2:  strb    w0, [x9], #1
     bl      read_char
     cmp     w0, #-1
     b.eq    3f
     cmp     w0, #' '
-    b.gt    2b                  // Continue if not whitespace
-
-3:  sub     x1, x2, x3          // Length
-    mov     x0, x3              // Address
+    b.gt    2b
+3:  sub     x1, x9, x10
+    mov     x0, x10
+    ldp     x9, x10, [sp], #16
     ldp     x29, x30, [sp], #16
     ret
 
-// read_char: Read one character
-// Returns: w0 = char or -1 on EOF
 read_char:
     stp     x29, x30, [sp, #-16]!
     sub     sp, sp, #16
-
-    mov     x0, #0              // stdin
+    mov     x0, #0
     mov     x1, sp
     mov     x2, #1
     mov     x16, #SYS_read
     svc     #0x80
-
     cmp     x0, #0
-    b.le    1f                  // EOF or error
+    b.le    1f
     ldrb    w0, [sp]
     b       2f
 1:  mov     w0, #-1
@@ -846,65 +796,55 @@ read_char:
     ldp     x29, x30, [sp], #16
     ret
 
-// find_word: Find word in dictionary
-// Input: x0 = word addr, x1 = length
-// Returns: x0 = entry addr or 0 if not found
 find_word:
     stp     x29, x30, [sp, #-16]!
     stp     x19, x20, [sp, #-16]!
-    mov     x19, x0             // Save word addr
-    mov     x20, x1             // Save length
-    mov     x0, x23             // Start at LATEST
-
-1:  cbz     x0, 3f              // End of dictionary
-    ldrb    w1, [x0, #8]        // Get flags+length
-    and     w1, w1, #F_LENMASK  // Mask length
-    cmp     w1, w20             // Compare length
-    b.ne    2f                  // Different length, skip
-
-    // Compare names
-    add     x2, x0, #9          // Name in dictionary
-    mov     x3, x19             // Word to find
-    mov     x4, x20             // Length
-4:  cbz     x4, 5f              // All matched
-    ldrb    w5, [x2], #1
+    mov     x19, x0
+    mov     x20, x1
+    mov     x0, x23
+1:  cbz     x0, 3f
+    ldr     x1, [x0]
+    cbz     x1, check_word
+    add     x1, x1, x28
+    b       check_link_done
+check_word:
+    mov     x1, #0
+check_link_done:
+    ldrb    w2, [x0, #8]
+    and     w2, w2, #F_LENMASK
+    cmp     w2, w20
+    b.ne    2f
+    add     x3, x0, #9
+    mov     x4, x19
+    mov     x5, x20
+4:  cbz     x5, 5f
     ldrb    w6, [x3], #1
-    // Case insensitive compare
-    orr     w5, w5, #0x20
+    ldrb    w7, [x4], #1
     orr     w6, w6, #0x20
-    cmp     w5, w6
-    b.ne    2f                  // Mismatch
-    sub     x4, x4, #1
+    orr     w7, w7, #0x20
+    cmp     w6, w7
+    b.ne    2f
+    sub     x5, x5, #1
     b       4b
-
-5:  // Found!
-    ldp     x19, x20, [sp], #16
+5:  ldp     x19, x20, [sp], #16
     ldp     x29, x30, [sp], #16
     ret
-
-2:  // Try next entry
-    ldr     x0, [x0]            // Follow link
+2:  mov     x0, x1
     b       1b
-
-3:  // Not found
+3:  mov     x1, x19
+    mov     x2, x20
     mov     x0, #0
     ldp     x19, x20, [sp], #16
     ldp     x29, x30, [sp], #16
     ret
 
-// parse_number: Parse string as number
-// Input: x0 = string addr, x1 = length
-// Output: x0 = number (pushed to stack), x1 = 1 if success, 0 if fail
 parse_number:
-    stp     x29, x30, [sp, #-16]!
-    cbz     x1, parse_fail      // Empty string
-
-    mov     x2, x0              // String pointer
-    mov     x3, x1              // Length
-    mov     x4, #0              // Result
-    mov     x5, #0              // Negative flag
-
-    // Check for negative
+    str     x30, [x21, #-8]!
+    cbz     x1, parse_fail
+    mov     x2, x0
+    mov     x3, x1
+    mov     x4, #0
+    mov     x5, #0
     ldrb    w6, [x2]
     cmp     w6, #'-'
     b.ne    1f
@@ -912,50 +852,34 @@ parse_number:
     add     x2, x2, #1
     sub     x3, x3, #1
     cbz     x3, parse_fail
-
-1:  // Get base
-    adrp    x7, var_BASE@PAGE
-    add     x7, x7, var_BASE@PAGEOFF
-    ldr     x7, [x7]
-
+1:  ldr     x7, [x25, #16]
 2:  cbz     x3, parse_done
     ldrb    w6, [x2], #1
-
-    // Convert digit
     cmp     w6, #'9'
     b.le    3f
-    orr     w6, w6, #0x20       // lowercase
+    orr     w6, w6, #0x20
     sub     w6, w6, #('a' - 10)
     b       4f
 3:  sub     w6, w6, #'0'
-4:  // Check valid digit
-    cmp     x6, #0
+4:  cmp     x6, #0
     b.lt    parse_fail
     cmp     x6, x7
     b.ge    parse_fail
-
-    // result = result * base + digit
     mul     x4, x4, x7
     add     x4, x4, x6
     sub     x3, x3, #1
     b       2b
-
 parse_done:
-    // Apply sign
     cbz     x5, 5f
     neg     x4, x4
-5:  // Push result
-    str     x0, [sp, #-8]!      // Save old TOS (from before call)
-    mov     x0, x4              // Result is new TOS
-    mov     x1, #1              // Success
-    ldp     x29, x30, [sp], #16
+5:  str     x4, [x27, #-8]!
+    mov     x0, x4
+    mov     x1, #1
+    ldr     x30, [x21], #8
     ret
-
 parse_fail:
-    mov     x1, #0              // Failure
-    ldp     x29, x30, [sp], #16
+    mov     x1, #0
+    ldr     x30, [x21], #8
     ret
 
-// Error message
-err_msg:
-    .ascii "? Unknown\n"
+err_msg: .ascii "?\n"
