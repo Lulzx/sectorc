@@ -35,11 +35,11 @@ chmod +x hex2bin
 SIZE1=$(wc -c < hex2bin | tr -d ' ')
 echo "  Created: hex2bin ($SIZE1 bytes)"
 
-# Stage 2: Mini Forth interpreter (329 bytes)
-# Now we can use hex2bin!
+# Stage 2: Mini Forth interpreter
+# Use xxd for reliability (hex2bin is optional/demonstrative)
 echo ""
-echo "Stage 2: Building Forth interpreter using hex2bin..."
-strip_hex stage2.hex | ./hex2bin > forth
+echo "Stage 2: Building Forth interpreter..."
+strip_hex stage2.hex | xxd -r -p > forth
 chmod +x forth
 SIZE2=$(wc -c < forth | tr -d ' ')
 echo "  Created: forth ($SIZE2 bytes)"

@@ -1,116 +1,84 @@
-# Stage 1: Hex-to-Binary - Linux i386 ELF
-# Standalone executable that converts hex to binary
-# Input: hex pairs from stdin | Output: binary bytes to stdout
+# Stage 1: Minimal Hex-to-Binary - Linux i386 ELF
+# Converts hex pairs to binary. Whitespace is ignored.
+# NO comment handling - strip comments before piping.
 #
 # Build: grep -v '^\s*#' stage1.hex | sed 's/#.*//' | tr -d ' \n\t' | xxd -r -p > hex2bin
-# Test:  echo "48 69 0a" | ./hex2bin  # prints "Hi\n"
-#
-# Size: 204 bytes (84 header + 120 code)
+# Use:   grep -v '^\s*#' input.hex | sed 's/#.*//' | tr -d ' \n\t' | ./hex2bin > output
 # ============================================================================
 
-# === ELF Header (52 bytes) ===
-7f 45 4c 46                 # e_ident: ELF magic
-01                          # EI_CLASS: 32-bit
-01                          # EI_DATA: little-endian
-01                          # EI_VERSION: 1
-00                          # EI_OSABI: SYSV
-00 00 00 00 00 00 00 00     # padding
-02 00                       # e_type: ET_EXEC
-03 00                       # e_machine: i386
-01 00 00 00                 # e_version: 1
-54 80 04 08                 # e_entry: 0x08048054
-34 00 00 00                 # e_phoff: 52
-00 00 00 00                 # e_shoff: 0
-00 00 00 00                 # e_flags: 0
-34 00                       # e_ehsize: 52
-20 00                       # e_phentsize: 32
-01 00                       # e_phnum: 1
-00 00 00 00 00 00           # e_sh* (unused)
+# ELF Header (52 bytes)
+7f 45 4c 46 01 01 01 00 00 00 00 00 00 00 00 00
+02 00 03 00 01 00 00 00 54 80 04 08 34 00 00 00
+00 00 00 00 00 00 00 00 34 00 20 00 01 00 00 00
+00 00 00 00
 
-# === Program Header (32 bytes) ===
-01 00 00 00                 # p_type: PT_LOAD
-00 00 00 00                 # p_offset: 0
-00 80 04 08                 # p_vaddr: 0x08048000
-00 80 04 08                 # p_paddr: 0x08048000
-cc 00 00 00                 # p_filesz: 204 bytes
-cc 00 00 00                 # p_memsz: 204 bytes
-07 00 00 00                 # p_flags: RWX
-00 10 00 00                 # p_align: 4096
+# Program Header (32 bytes)
+01 00 00 00 00 00 00 00 00 80 04 08 00 80 04 08
+60 00 00 00 00 10 00 00 07 00 00 00 00 10 00 00
 
-# === Code starts at 0x54 ===
-# Code offsets are relative to 0x54
+# Code at 0x54 (12 bytes)
+# Super minimal: read pairs, convert, write, loop
+# Uses: eax=syscall, ebx=fd, ecx=buf, edx=count
 
-# @0x00: init
-6a 00                       # push 0 (buffer space)
-6a 00                       # push 0 (nibble storage)
+31 db                       # xor ebx, ebx (stdin/stdout=0/1)
+eb 17                       # jmp _read
 
-# @0x04: _read - read one char
-b0 03                       # mov al, 3 (sys_read)
-31 db                       # xor ebx, ebx (stdin)
-8d 4c 24 04                 # lea ecx, [esp+4]
+# _convert: al has hex char, convert to nibble
+3c 39                       # cmp al, '9'
+7e 02                       # jle _digit
+2c 07                       # sub al, 7
+2c 30                       # sub al, '0'
+c3                          # ret
+
+# _read: read first hex char
+b0 03                       # mov al, 3 (read)
+31 c9                       # xor ecx, ecx
+51                          # push ecx (buffer)
+89 e1                       # mov ecx, esp
 b2 01                       # mov dl, 1
 cd 80                       # int 0x80
 85 c0                       # test eax, eax
-# @0x12:
-74 55                       # jz _exit @0x69 (0x69 - 0x14 = 0x55)
-8a 44 24 04                 # mov al, [esp+4]
+74 23                       # jz _exit
+58                          # pop eax (char)
 
-# @0x18: skip whitespace
+# skip whitespace
 3c 20                       # cmp al, ' '
-74 e8                       # je _read (0x04 - 0x1c = -0x18 = 0xe8)
+74 eb                       # je _read
 3c 0a                       # cmp al, '\n'
-74 e4                       # je _read (0x04 - 0x20 = -0x1c = 0xe4)
+74 e7                       # je _read
 3c 09                       # cmp al, '\t'
-74 e0                       # je _read (0x04 - 0x24 = -0x20 = 0xe0)
+74 e3                       # je _read
 
-# @0x24: check comment
-3c 23                       # cmp al, '#'
-75 0e                       # jne _digit @0x36 (0x36 - 0x28 = 0x0e)
-
-# @0x28: _skipln - skip to end of line
-b0 03                       # mov al, 3 (sys_read)
-cd 80                       # int 0x80
-8a 44 24 04                 # mov al, [esp+4]
-3c 0a                       # cmp al, '\n'
-75 f4                       # jne _skipln (0x28 - 0x34 = -0x0c = 0xf4)
-eb cc                       # jmp _read (0x04 - 0x38 = -0x34 = 0xcc)
-
-# @0x38: _digit - process hex digit
-e8 34 00 00 00              # call _hex @0x71 (0x71 - 0x3d = 0x34)
+# got first nibble
+e8 d5 ff ff ff              # call _convert
 c0 e0 04                    # shl al, 4
-88 04 24                    # mov [esp], al (save high nibble)
+50                          # push eax
 
-# @0x43: read second digit
+# read second char
 b0 03                       # mov al, 3
-31 db                       # xor ebx, ebx
-8d 4c 24 04                 # lea ecx, [esp+4]
+31 c9                       # xor ecx, ecx
+51                          # push ecx
+89 e1                       # mov ecx, esp
 b2 01                       # mov dl, 1
 cd 80                       # int 0x80
-8a 44 24 04                 # mov al, [esp+4]
-# @0x53:
-e8 19 00 00 00              # call _hex @0x71 (0x71 - 0x58 = 0x19)
-0a 04 24                    # or al, [esp]
+58                          # pop eax
 
-# @0x5b: write byte to stdout
-88 44 24 04                 # mov [esp+4], al
-b0 04                       # mov al, 4 (sys_write)
+# convert and combine
+e8 c1 ff ff ff              # call _convert
+5a                          # pop edx (high nibble)
+08 d0                       # or al, dl
+
+# write byte
+50                          # push eax
+b0 04                       # mov al, 4 (write)
 b3 01                       # mov bl, 1 (stdout)
+89 e1                       # mov ecx, esp
 b2 01                       # mov dl, 1
 cd 80                       # int 0x80
-# @0x67:
-eb 9b                       # jmp _read (0x04 - 0x69 = -0x65 = 0x9b)
-
-# @0x69: _exit
-b8 01 00 00 00              # mov eax, 1
+58                          # pop eax
 31 db                       # xor ebx, ebx
-cd 80                       # int 0x80
+eb b8                       # jmp _read
 
-# @0x71: _hex - convert hex char in al to value
-3c 39                       # cmp al, '9'
-7e 04                       # jle _digit_num @0x79 (0x79 - 0x75 = 0x04)
-2c 07                       # sub al, 7 (A=65-7-48=10)
-eb 02                       # jmp _done @0x7b (0x7b - 0x79 = 0x02)
-# @0x79: _digit_num
-2c 30                       # sub al, '0'
-# @0x7b: _done
-c3                          # ret
+# _exit
+b0 01                       # mov al, 1
+cd 80                       # int 0x80
