@@ -1,0 +1,89 @@
+# Stage 1: Hex to Binary Filter - Linux i386
+# Loaded by Stage 0, reads hex from stdin, writes binary to stdout
+#
+# Build: cat hex2bin.hex | ../stage0-hex/stage0 > hex2bin
+#        chmod +x hex2bin
+# Test:  echo "48 65 6c 6c 6f 0a" | ./hex2bin
+#        (outputs "Hello\n")
+#
+# This is used to build Stage 2 (C compiler) from hex source.
+#
+# Size: ~120 bytes of code (after headers)
+# ============================================================================
+
+# _start:
+# read_loop: read hex pairs, write bytes
+
+# Read first hex digit
+# _read_loop:
+50                          # push eax (make stack space)
+b8 03 00 00 00              # mov eax, 3 (sys_read)
+31 db                       # xor ebx, ebx (stdin)
+89 e1                       # mov ecx, esp (buffer)
+ba 01 00 00 00              # mov edx, 1 (count)
+cd 80                       # int 0x80
+85 c0                       # test eax, eax
+74 3f                       # jz _exit (EOF)
+
+8a 01                       # mov al, [ecx]
+
+# Skip whitespace
+3c 20                       # cmp al, ' '
+74 e5                       # je _read_loop
+3c 0a                       # cmp al, '\n'
+74 e1                       # je _read_loop
+3c 09                       # cmp al, '\t'
+74 dd                       # je _read_loop
+3c 0d                       # cmp al, '\r'
+74 d9                       # je _read_loop
+
+# Skip # comments
+3c 23                       # cmp al, '#'
+75 0e                       # jne _not_comment
+# _skip_comment:
+b8 03 00 00 00              # mov eax, 3
+31 db                       # xor ebx, ebx
+cd 80                       # int 0x80
+8a 01                       # mov al, [ecx]
+3c 0a                       # cmp al, '\n'
+75 f1                       # jne _skip_comment
+eb c5                       # jmp _read_loop
+
+# _not_comment:
+# Convert first hex digit
+e8 26 00 00 00              # call _hex
+c0 e0 04                    # shl al, 4
+88 c2                       # mov dl, al (save high nibble)
+
+# Read second hex digit
+b8 03 00 00 00              # mov eax, 3
+31 db                       # xor ebx, ebx
+cd 80                       # int 0x80
+8a 01                       # mov al, [ecx]
+e8 13 00 00 00              # call _hex
+08 d0                       # or al, dl
+
+# Write byte to stdout
+88 01                       # mov [ecx], al
+b8 04 00 00 00              # mov eax, 4 (sys_write)
+bb 01 00 00 00              # mov ebx, 1 (stdout)
+ba 01 00 00 00              # mov edx, 1
+cd 80                       # int 0x80
+
+58                          # pop eax (balance stack)
+eb a0                       # jmp _read_loop
+
+# _exit:
+b8 01 00 00 00              # mov eax, 1 (sys_exit)
+31 db                       # xor ebx, ebx
+cd 80                       # int 0x80
+
+# _hex: convert ASCII hex digit in al to nibble value
+3c 39                       # cmp al, '9'
+7e 04                       # jle _numeric
+24 df                       # and al, 0xdf (uppercase)
+2c 37                       # sub al, 'A'-10
+c3                          # ret
+# _numeric:
+2c 30                       # sub al, '0'
+c3                          # ret

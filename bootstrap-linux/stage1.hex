@@ -1,0 +1,68 @@
+# Stage 1: Hex-to-Binary - Linux i386
+# Input: hex pairs from stdin | Output: binary bytes to stdout
+# Size: ~120 bytes
+#
+# Build: cat stage1.hex | ./stage0 > hex2bin
+# Test:  echo "48 69 0a" | ./hex2bin  # prints "Hi\n"
+
+# @00
+6a 00                       # push 0 (buffer space)
+6a 00                       # push 0 (nibble storage)
+# _read @04: read one char
+b0 03                       # mov al, 3 (sys_read)
+31 db                       # xor ebx, ebx (stdin)
+8d 4c 24 04                 # lea ecx, [esp+4]
+b2 01                       # mov dl, 1
+cd 80                       # int 0x80
+85 c0                       # test eax, eax
+74 53                       # jz _exit @67 (0x67-0x14=0x53)
+8a 44 24 04                 # mov al, [esp+4]
+# skip whitespace
+3c 20                       # cmp al, ' '
+74 e8                       # je _read (0x04-0x1c=-0x18)
+3c 0a                       # cmp al, '\n'
+74 e4                       # je _read
+3c 09                       # cmp al, '\t'
+74 e0                       # je _read
+# check comment
+3c 23                       # cmp al, '#'
+75 0e                       # jne _digit @36 (0x36-0x28=0x0e)
+# _skipln @28: skip to end of line
+b0 03                       # mov al, 3 (sys_read) - FIXED: set eax
+cd 80                       # int 0x80
+8a 44 24 04                 # mov al, [esp+4]
+3c 0a                       # cmp al, '\n'
+75 f4                       # jne _skipln (0x28-0x34=-0x0c=0xf4)
+eb ce                       # jmp _read
+# _digit @36: process hex digit
+e8 32 00 00 00              # call _hex @6d
+c0 e0 04                    # shl al, 4
+88 04 24                    # mov [esp], al (save high nibble)
+# read second digit
+b0 03                       # mov al, 3
+31 db                       # xor ebx, ebx
+8d 4c 24 04                 # lea ecx, [esp+4]
+b2 01                       # mov dl, 1
+cd 80                       # int 0x80
+8a 44 24 04                 # mov al, [esp+4]
+e8 17 00 00 00              # call _hex @6d
+0a 04 24                    # or al, [esp]
+# write byte to stdout
+88 44 24 04                 # mov [esp+4], al
+b0 04                       # mov al, 4 (sys_write)
+b3 01                       # mov bl, 1 (stdout)
+b2 01                       # mov dl, 1
+cd 80                       # int 0x80
+eb 9d                       # jmp _read
+# _exit @67:
+b0 01                       # mov al, 1 (sys_exit)
+31 db                       # xor ebx, ebx
+cd 80                       # int 0x80
+# _hex @6d: convert al from ASCII hex to nibble
+3c 39                       # cmp al, '9'
+7e 04                       # jle _num @75
+24 df                       # and al, 0xdf (uppercase)
+2c 37                       # sub al, 'A'-10
+# _num @75:
+2c 30                       # sub al, '0'
+c3                          # ret

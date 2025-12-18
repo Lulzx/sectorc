@@ -15,8 +15,10 @@ stage1.hex
 stage1/forth.exe
 output.s
 
-# Keep stage0-hex source (it's hand-written, not generated)
+# Keep hand-written hex sources (not generated)
 !stage0-hex/stage0.hex
+!bootstrap-linux/stage0.hex
+!bootstrap-linux/stage1.hex
 
 # Test artifacts
 /tmp/test*

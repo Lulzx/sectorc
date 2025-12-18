@@ -1,0 +1,141 @@
+# Stage 2: Tiny Stack Machine - Linux i386
+# A minimal interpreter with single-character commands
+# Used to write Stage 3 (C compiler) more easily than raw hex
+#
+# Commands:
+#   0-9    Push digit (0-9)
+#   +      Add TOS to NOS
+#   -      Subtract TOS from NOS
+#   *      Multiply
+#   /      Divide
+#   .      Print TOS as number
+#   ,      Print TOS as ASCII char
+#   :      Duplicate TOS
+#   $      Drop TOS
+#   \      Swap TOS and NOS
+#   @      Fetch byte from address
+#   !      Store byte to address
+#   '      Next char is literal (push ASCII value)
+#   "      String: push chars until "
+#   [      Start loop
+#   ]      End loop (loop if TOS != 0)
+#   ;      Comment to end of line
+#   >      Emit byte to output
+#   <      Read byte from input
+#   =      Test equality (TOS = NOS)
+#   (      Define subroutine (next char is name)
+#   )      End subroutine
+#   a-z    Call subroutine
+#
+# Memory: 64KB, stack at top
+# This is enough to write a simple C compiler
+#
+# Size: ~400 bytes
+# ============================================================================
+
+# Initialize
+89 e5                       # mov ebp, esp (data stack)
+81 ed 00 02 00 00           # sub ebp, 0x200 (stack space)
+bf 00 40 00 00              # mov edi, 0x4000 (memory/data area)
+be 00 50 00 00              # mov esi, 0x5000 (subroutine table)
+
+# _main: fetch and execute loop
+# _fetch:
+50                          # push eax
+b8 03 00 00 00              # mov eax, 3 (sys_read)
+31 db                       # xor ebx, ebx (stdin)
+89 e1                       # mov ecx, esp
+ba 01 00 00 00              # mov edx, 1
+cd 80                       # int 0x80
+58                          # pop eax
+85 c0                       # test eax, eax
+0f 84 XX XX 00 00           # jz _exit (EOF) - patch offset
+
+8a 44 24 ff                 # mov al, [esp-1]
+
+# Dispatch on character
+3c 30                       # cmp al, '0'
+7c 10                       # jl _not_digit
+3c 39                       # cmp al, '9'
+7f 0c                       # jg _not_digit
+# Push digit
+2c 30                       # sub al, '0'
+83 ed 04                    # sub ebp, 4
+89 45 00                    # mov [ebp], eax
+e9 XX XX ff ff              # jmp _fetch
+
+# _not_digit:
+3c 2b                       # cmp al, '+'
+75 0b                       # jne _not_add
+# Add
+8b 45 00                    # mov eax, [ebp]
+83 c5 04                    # add ebp, 4
+01 45 00                    # add [ebp], eax
+e9 XX XX ff ff              # jmp _fetch
+
+# _not_add:
+3c 2d                       # cmp al, '-'
+75 0b                       # jne _not_sub
+# Subtract
+8b 45 00                    # mov eax, [ebp]
+83 c5 04                    # add ebp, 4
+29 45 00                    # sub [ebp], eax
+e9 XX XX ff ff              # jmp _fetch
+
+# _not_sub:
+3c 2e                       # cmp al, '.'
+75 XX                       # jne _not_print
+# Print number (simplified: just print low byte as digit)
+8b 45 00                    # mov eax, [ebp]
+83 c5 04                    # add ebp, 4
+83 c0 30                    # add eax, '0'
+50                          # push eax
+b8 04 00 00 00              # mov eax, 4
+bb 01 00 00 00              # mov ebx, 1
+89 e1                       # mov ecx, esp
+ba 01 00 00 00              # mov edx, 1
+cd 80                       # int 0x80
+58                          # pop eax
+e9 XX XX ff ff              # jmp _fetch
+
+# _not_print:
+3c 3e                       # cmp al, '>'
+75 XX                       # jne _not_emit
+# Emit byte
+8b 45 00                    # mov eax, [ebp]
+83 c5 04                    # add ebp, 4
+50                          # push eax
+b8 04 00 00 00              # mov eax, 4
+bb 01 00 00 00              # mov ebx, 1
+89 e1                       # mov ecx, esp
+ba 01 00 00 00              # mov edx, 1
+cd 80                       # int 0x80
+58                          # pop eax
+e9 XX XX ff ff              # jmp _fetch
+
+# _not_emit:
+3c 3a                       # cmp al, ':'
+75 0a                       # jne _not_dup
+# Duplicate
+8b 45 00                    # mov eax, [ebp]
+83 ed 04                    # sub ebp, 4
+89 45 00                    # mov [ebp], eax
+e9 XX XX ff ff              # jmp _fetch
+
+# _not_dup:
+3c 24                       # cmp al, '$'
+75 05                       # jne _not_drop
+# Drop
+83 c5 04                    # add ebp, 4
+e9 XX XX ff ff              # jmp _fetch
+
+# _not_drop:
+# ... more commands ...
+
+# For now, just loop back
+e9 XX XX ff ff              # jmp _fetch
+
+# _exit:
+b8 01 00 00 00              # mov eax, 1 (sys_exit)
+31 db                       # xor ebx, ebx
+cd 80                       # int 0x80

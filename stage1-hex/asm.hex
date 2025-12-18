@@ -1,0 +1,131 @@
+# Stage 1: Minimal Assembler - Linux i386
+# Loaded by Stage 0 (hex loader)
+#
+# Input: Simple assembly (mov, add, sub, jmp, call, ret, int, push, pop)
+# Output: Raw machine code bytes to stdout
+#
+# This is enough to write a C compiler in assembly.
+#
+# Syntax (one instruction per line):
+#   mov eax, 42      -> B8 2A 00 00 00
+#   mov eax, ebx     -> 89 D8
+#   add eax, 1       -> 83 C0 01
+#   ret              -> C3
+#   ; comment        -> ignored
+#   .bytes XX XX     -> raw hex bytes
+#
+# Registers: eax=0, ecx=1, edx=2, ebx=3, esp=4, ebp=5, esi=6, edi=7
+#
+# Size target: ~500 bytes
+# ============================================================================
+
+# Entry point
+# Initialize: ebp = data stack, edi = output buffer
+
+89 e5                       # mov ebp, esp
+81 ed 00 10 00 00           # sub ebp, 0x1000
+bf 00 40 00 00              # mov edi, 0x4000 (output buffer)
+
+# Main loop: read line, assemble, output
+# _main_loop:
+
+# Read character
+31 c0                       # xor eax, eax (sys_read)
+31 db                       # xor ebx, ebx (stdin)
+57                          # push edi (save output ptr)
+89 e1                       # mov ecx, esp
+ba 01 00 00 00              # mov edx, 1
+cd 80                       # int 0x80
+5f                          # pop edi (restore)
+85 c0                       # test eax, eax
+74 60                       # jz _done (EOF)
+
+# Get char in al
+8a 44 24 ff                 # mov al, [esp-1]
+
+# Skip if newline - flush line
+3c 0a                       # cmp al, '\n'
+75 10                       # jne _not_newline
+# Output accumulated bytes
+# TODO: write output buffer
+eb d8                       # jmp _main_loop
+
+# _not_newline:
+# Skip comments (;)
+3c 3b                       # cmp al, ';'
+75 08                       # jne _not_comment
+# _skip_comment:
+# Read until newline
+eb cc                       # jmp _main_loop (simplified - skip comment handling)
+
+# _not_comment:
+# Accumulate in line buffer
+# TODO: proper line parsing
+
+# For now, just pass through bytes marked with .
+3c 2e                       # cmp al, '.'
+75 c2                       # jne _main_loop
+
+# Read "bytes " and then hex
+# Simplified: just read hex pairs after '.'
+
+# _read_hex_loop:
+31 c0                       # xor eax, eax
+31 db                       # xor ebx, ebx
+57                          # push edi
+89 e1                       # mov ecx, esp
+ba 01 00 00 00              # mov edx, 1
+cd 80                       # int 0x80
+5f                          # pop edi
+8a 44 24 ff                 # mov al, [esp-1]
+
+# Skip space
+3c 20                       # cmp al, ' '
+74 eb                       # je _read_hex_loop
+
+# Newline ends directive
+3c 0a                       # cmp al, '\n'
+74 98                       # je _main_loop
+
+# Convert hex digit
+e8 20 00 00 00              # call _hex_digit
+c0 e0 04                    # shl al, 4
+88 c2                       # mov dl, al
+
+# Read second digit
+31 c0                       # xor eax, eax
+31 db                       # xor ebx, ebx
+57                          # push edi
+89 e1                       # mov ecx, esp
+ba 01 00 00 00              # mov edx, 1
+cd 80                       # int 0x80
+5f                          # pop edi
+8a 44 24 ff                 # mov al, [esp-1]
+e8 02 00 00 00              # call _hex_digit
+08 d0                       # or al, dl
+
+# Output byte
+50                          # push eax
+b8 04 00 00 00              # mov eax, 4 (sys_write)
+bb 01 00 00 00              # mov ebx, 1 (stdout)
+89 e1                       # mov ecx, esp
+ba 01 00 00 00              # mov edx, 1
+cd 80                       # int 0x80
+58                          # pop eax
+
+eb b8                       # jmp _read_hex_loop
+
+# _done:
+b8 01 00 00 00              # mov eax, 1 (sys_exit)
+31 db                       # xor ebx, ebx
+cd 80                       # int 0x80
+
+# _hex_digit: convert ASCII hex to nibble
+3c 39                       # cmp al, '9'
+7e 04                       # jle _numeric
+24 df                       # and al, 0xdf
+2c 37                       # sub al, 0x37
+c3                          # ret
+# _numeric:
+2c 30                       # sub al, '0'
+c3                          # ret
