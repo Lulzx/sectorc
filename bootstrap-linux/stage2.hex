@@ -1,11 +1,45 @@
-# Stage 2: Mini Forth - Linux i386
-# Build: cat stage2.hex | ./hex2bin > forth && chmod +x forth
+# Stage 2: Mini Forth - Linux i386 ELF
+# Standalone Forth interpreter
+#
+# Build: xxd -r -p <(grep -v '^\s*#' stage2.hex | sed 's/#.*//') > forth
+# Test:  echo "2 3 + > q" | ./forth | od -An -tu1
 #
 # Commands: 0-9 + - * / > d x s @ ! H , q
-# Size: ~350 bytes
+# Size: ~413 bytes (84 header + 329 code)
 # ============================================================================
 
 # ebp = stack (down from 0x10000), edi = HERE, esi/ebx = number building
+
+# === ELF Header (52 bytes) ===
+7f 45 4c 46                 # e_ident: ELF magic
+01                          # EI_CLASS: 32-bit
+01                          # EI_DATA: little-endian
+01                          # EI_VERSION: 1
+00                          # EI_OSABI: SYSV
+00 00 00 00 00 00 00 00     # padding
+02 00                       # e_type: ET_EXEC
+03 00                       # e_machine: i386
+01 00 00 00                 # e_version: 1
+54 80 04 08                 # e_entry: 0x08048054
+34 00 00 00                 # e_phoff: 52
+00 00 00 00                 # e_shoff: 0
+00 00 00 00                 # e_flags: 0
+34 00                       # e_ehsize: 52
+20 00                       # e_phentsize: 32
+01 00                       # e_phnum: 1
+00 00 00 00 00 00           # e_sh* (unused)
+
+# === Program Header (32 bytes) ===
+01 00 00 00                 # p_type: PT_LOAD
+00 00 00 00                 # p_offset: 0
+00 80 04 08                 # p_vaddr: 0x08048000
+00 80 04 08                 # p_paddr: 0x08048000
+9d 01 00 00                 # p_filesz: 413 bytes
+00 00 02 00                 # p_memsz: 128K (stack space)
+07 00 00 00                 # p_flags: RWX
+00 10 00 00                 # p_align: 4096
+
+# === Code @ 0x54 (329 bytes) ===
 
 # === INIT ===
 bd 00 00 01 00              # mov ebp, 0x10000
@@ -13,7 +47,7 @@ bf 00 20 00 00              # mov edi, 0x2000 (HERE)
 31 f6                       # xor esi, esi
 31 db                       # xor ebx, ebx
 
-# === LOOP @0x0e ===
+# === LOOP @0x62 ===
 6a 00                       # push 0
 b8 03 00 00 00              # mov eax, 3
 31 c9                       # xor ecx, ecx
@@ -53,20 +87,35 @@ eb c3                       # jmp _loop
 3c 09                       # cmp al, '\t'
 74 a9                       # je _loop
 
-# Commands
+# Skip comments
+3c 23                       # cmp al, '#'
+75 0e                       # jne _check_ops
+# _skip_comment:
+6a 00                       # push 0
+b8 03 00 00 00              # mov eax, 3
+8d 4c 24 00                 # lea ecx, [esp]
+ba 01 00 00 00              # mov edx, 1
+cd 80                       # int 0x80
+8a 04 24                    # mov al, [esp]
+83 c4 04                    # add esp, 4
+3c 0a                       # cmp al, '\n'
+75 e6                       # jne _skip_comment
+eb 8b                       # jmp _loop
+
+# _check_ops: Commands
 3c 2b                       # +
 75 0a                       # jne
 8b 45 00                    # mov eax, [ebp]
 83 c5 04                    # add ebp, 4
 01 45 00                    # add [ebp], eax
-eb 9b                       # jmp _loop
+e9 73 ff ff ff              # jmp _loop
 
 3c 2d                       # -
 75 0a                       # jne
 8b 45 00                    # mov eax, [ebp]
 83 c5 04                    # add ebp, 4
 29 45 00                    # sub [ebp], eax
-eb 8d                       # jmp _loop
+e9 63 ff ff ff              # jmp _loop
 
 3c 2a                       # *
 75 0d                       # jne
@@ -74,7 +123,7 @@ eb 8d                       # jmp _loop
 f7 6d 00                    # imul dword [ebp]
 83 c5 04                    # add ebp, 4
 89 45 00                    # mov [ebp], eax
-eb 7c                       # jmp _loop
+e9 50 ff ff ff              # jmp _loop
 
 3c 2f                       # /
 75 10                       # jne
@@ -84,7 +133,7 @@ eb 7c                       # jmp _loop
 f7 f9                       # idiv ecx
 83 c5 04                    # add ebp, 4
 89 45 00                    # mov [ebp], eax
-eb 68                       # jmp _loop
+e9 3a ff ff ff              # jmp _loop
 
 3c 3e                       # > emit
 75 14                       # jne
@@ -98,56 +147,56 @@ ba 01 00 00 00              # mov edx, 1
 cd 80                       # int 0x80
 58                          # pop eax
 31 db                       # xor ebx, ebx (restore)
-eb 48                       # jmp _loop
+e9 18 ff ff ff              # jmp _loop
 
 3c 64                       # d (dup)
 75 0a                       # jne
 8b 45 00                    # mov eax, [ebp]
 83 ed 04                    # sub ebp, 4
 89 45 00                    # mov [ebp], eax
-eb 3a                       # jmp _loop
+e9 08 ff ff ff              # jmp _loop
 
 3c 78                       # x (drop)
-75 04                       # jne
+75 07                       # jne
 83 c5 04                    # add ebp, 4
-eb 32                       # jmp _loop
+e9 fd fe ff ff              # jmp _loop
 
 3c 73                       # s (swap)
-75 0c                       # jne
+75 0f                       # jne
 8b 45 00                    # mov eax, [ebp]
 8b 55 04                    # mov edx, [ebp+4]
 89 55 00                    # mov [ebp], edx
 89 45 04                    # mov [ebp+4], eax
-eb 22                       # jmp _loop
+e9 ea fe ff ff              # jmp _loop
 
 3c 40                       # @ (fetch)
-75 06                       # jne
+75 09                       # jne
 8b 45 00                    # mov eax, [ebp]
 8b 00                       # mov eax, [eax]
 89 45 00                    # mov [ebp], eax
-eb 14                       # jmp _loop
+e9 db fe ff ff              # jmp _loop
 
 3c 21                       # ! (store)
-75 0a                       # jne
+75 0d                       # jne
 8b 45 00                    # mov eax, [ebp]
 8b 55 04                    # mov edx, [ebp+4]
 89 10                       # mov [eax], edx
 83 c5 08                    # add ebp, 8
-eb 04                       # jmp _loop
+e9 c9 fe ff ff              # jmp _loop
 
 3c 48                       # H (HERE)
-75 06                       # jne
+75 09                       # jne
 83 ed 04                    # sub ebp, 4
 89 7d 00                    # mov [ebp], edi
-e9 3f ff ff ff              # jmp _loop (near)
+e9 bc fe ff ff              # jmp _loop
 
 3c 2c                       # , (comma - compile)
-75 06                       # jne
+75 0c                       # jne
 8b 45 00                    # mov eax, [ebp]
 83 c5 04                    # add ebp, 4
 89 07                       # mov [edi], eax
 83 c7 04                    # add edi, 4
-e9 2c ff ff ff              # jmp _loop
+e9 a9 fe ff ff              # jmp _loop
 
 3c 71                       # q (quit)
 75 07                       # jne _unknown
@@ -157,4 +206,4 @@ b8 01 00 00 00              # mov eax, 1
 cd 80                       # int 0x80
 
 # _unknown - ignore
-e9 18 ff ff ff              # jmp _loop
+e9 95 fe ff ff              # jmp _loop

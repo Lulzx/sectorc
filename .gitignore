@@ -19,6 +19,17 @@ output.s
 !stage0-hex/stage0.hex
 !bootstrap-linux/stage0.hex
 !bootstrap-linux/stage1.hex
+!bootstrap-linux/stage2.hex
+
+# Bootstrap-linux generated binaries
+bootstrap-linux/stage0
+bootstrap-linux/hex2bin
+bootstrap-linux/forth
+bootstrap-linux/cc
+bootstrap-linux/hello
+bootstrap-linux/test_prog
+bootstrap-linux/a.out
+bootstrap-linux/*.test
 
 # Test artifacts
 /tmp/test*

@@ -1,0 +1,29 @@
+name: Test Bootstrap Chain
+
+on:
+  push:
+    paths:
+      - 'bootstrap-linux/**'
+  pull_request:
+    paths:
+      - 'bootstrap-linux/**'
+  workflow_dispatch:
+
+jobs:
+  test-bootstrap:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install 32-bit support
+      run: |
+        sudo dpkg --add-architecture i386
+        sudo apt-get update
+        sudo apt-get install -y libc6:i386
+
+    - name: Run bootstrap chain
+      run: |
+        cd bootstrap-linux
+        chmod +x bootstrap.sh
+        ./bootstrap.sh

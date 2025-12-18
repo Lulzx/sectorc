@@ -1,0 +1,157 @@
+# cc.s2 - Tiny C Compiler in Stage 2 language
+# Compiles a minimal subset of C to i386 ELF
+#
+# Usage: ./forth < cc.s2 > cc && chmod +x cc
+#        echo "int main(){return 42;}" | ./cc > a.out && chmod +x a.out
+#
+# This outputs a C compiler that understands:
+#   - int main() { return N; }
+#   - That's it. Just return a constant.
+#
+# The compiler is itself an ELF binary that:
+#   1. Reads C source from stdin
+#   2. Parses "return N;" to extract N
+#   3. Outputs an ELF that exits with code N
+#
+# Size: ~200 bytes of generated code
+# ============================================================================
+
+# First, output the ELF header for the compiler binary itself
+
+# === ELF Header (52 bytes) ===
+127 > 69 > 76 > 70 >        # e_ident: 0x7f E L F
+1 > 1 > 1 > 0 >              # 32-bit, LE, v1, SYSV
+0 > 0 > 0 > 0 > 0 > 0 > 0 > 0 >  # padding
+2 > 0 >                      # e_type: ET_EXEC
+3 > 0 >                      # e_machine: i386
+1 > 0 > 0 > 0 >              # e_version
+84 > 128 > 4 > 8 >           # e_entry: 0x08048054
+52 > 0 > 0 > 0 >             # e_phoff: 52
+0 > 0 > 0 > 0 >              # e_shoff: 0
+0 > 0 > 0 > 0 >              # e_flags
+52 > 0 >                     # e_ehsize
+32 > 0 >                     # e_phentsize
+1 > 0 >                      # e_phnum
+0 > 0 > 0 > 0 > 0 > 0 >      # e_sh*
+
+# === Program Header (32 bytes) ===
+1 > 0 > 0 > 0 >              # PT_LOAD
+0 > 0 > 0 > 0 >              # p_offset
+0 > 128 > 4 > 8 >            # p_vaddr
+0 > 128 > 4 > 8 >            # p_paddr
+0 > 2 > 0 > 0 >              # p_filesz: 512 bytes
+0 > 2 > 0 > 0 >              # p_memsz
+7 > 0 > 0 > 0 >              # p_flags: RWX
+0 > 16 > 0 > 0 >             # p_align
+
+# === Compiler Code @ 0x54 ===
+# This code reads stdin, finds "return N;", outputs ELF that exits with N
+
+# Skip until we find 'r' (start of "return")
+# _skip:
+184 > 3 > 0 > 0 > 0 >        # mov eax, 3 (read)
+187 > 0 > 0 > 0 > 0 >        # mov ebx, 0 (stdin)
+185 > 0 > 129 > 4 > 8 >      # mov ecx, buffer @0x08048100
+186 > 1 > 0 > 0 > 0 >        # mov edx, 1
+205 > 128 >                  # int 0x80
+133 > 192 >                  # test eax, eax
+15 > 132 > 200 > 0 > 0 > 0 > # jz _error (EOF before return)
+128 > 61 > 0 > 129 > 4 > 8 > 114 >  # cmp byte [buffer], 'r'
+117 > 224 >                  # jne _skip
+
+# Found 'r', skip "eturn "
+184 > 3 > 0 > 0 > 0 >        # mov eax, 3
+187 > 0 > 0 > 0 > 0 >        # mov ebx, 0
+185 > 0 > 129 > 4 > 8 >      # mov ecx, buffer
+186 > 6 > 0 > 0 > 0 >        # mov edx, 6 ("eturn ")
+205 > 128 >                  # int 0x80
+
+# Read the number (simple: just one digit)
+184 > 3 > 0 > 0 > 0 >        # mov eax, 3
+187 > 0 > 0 > 0 > 0 >        # mov ebx, 0
+185 > 0 > 129 > 4 > 8 >      # mov ecx, buffer
+186 > 1 > 0 > 0 > 0 >        # mov edx, 1
+205 > 128 >                  # int 0x80
+
+# Convert ASCII to number
+15 > 182 > 5 > 0 > 129 > 4 > 8 >  # movzx eax, byte [buffer]
+131 > 232 > 48 >             # sub eax, '0'
+80 >                         # push eax (save return value)
+
+# Now output ELF header
+# mov eax, 4 (write)
+184 > 4 > 0 > 0 > 0 >
+# mov ebx, 1 (stdout)
+187 > 1 > 0 > 0 > 0 >
+# mov ecx, elf_template
+185 > 16 > 129 > 4 > 8 >     # 0x08048110
+# mov edx, 84
+186 > 84 > 0 > 0 > 0 >
+205 > 128 >                  # int 0x80
+
+# Output exit code at correct offset
+# The template ELF has "mov ebx, ?" at offset 79
+# We need to patch it with our value
+88 >                         # pop eax (get return value)
+# Write single byte to stdout (the exit code)
+80 >                         # push eax
+184 > 4 > 0 > 0 > 0 >
+187 > 1 > 0 > 0 > 0 >
+137 > 225 >                  # mov ecx, esp
+186 > 1 > 0 > 0 > 0 >
+205 > 128 >                  # int 0x80
+88 >                         # pop eax
+
+# Write rest of template
+184 > 4 > 0 > 0 > 0 >
+187 > 1 > 0 > 0 > 0 >
+185 > 100 > 129 > 4 > 8 >    # after the patched byte
+186 > 4 > 0 > 0 > 0 >        # remaining 4 bytes
+205 > 128 >                  # int 0x80
+
+# Exit successfully
+184 > 1 > 0 > 0 > 0 >
+187 > 0 > 0 > 0 > 0 >
+205 > 128 >
+
+# _error: exit with error
+184 > 1 > 0 > 0 > 0 >
+187 > 1 > 0 > 0 > 0 >
+205 > 128 >
+
+# === ELF Template @ 0x110 ===
+# A minimal ELF that does: mov eax,1; mov ebx,?; int 0x80
+# The ? byte will be patched with the return value
+
+# ELF header for output (52 bytes)
+127 > 69 > 76 > 70 >
+1 > 1 > 1 > 0 >
+0 > 0 > 0 > 0 > 0 > 0 > 0 > 0 >
+2 > 0 > 3 > 0 >
+1 > 0 > 0 > 0 >
+84 > 128 > 4 > 8 >           # entry
+52 > 0 > 0 > 0 >
+0 > 0 > 0 > 0 >
+0 > 0 > 0 > 0 >
+52 > 0 > 32 > 0 >
+1 > 0 > 0 > 0 >
+0 > 0 > 0 > 0 >
+
+# Program header (32 bytes)
+1 > 0 > 0 > 0 >
+0 > 0 > 0 > 0 >
+0 > 128 > 4 > 8 >
+0 > 128 > 4 > 8 >
+96 > 0 > 0 > 0 >             # filesz
+96 > 0 > 0 > 0 >             # memsz
+7 > 0 > 0 > 0 >
+0 > 16 > 0 > 0 >
+
+# Code: mov eax,1; mov ebx,N; int 0x80 (12 bytes @ offset 84)
+184 > 1 > 0 > 0 > 0 >        # mov eax, 1
+187 >                        # mov ebx, ... (N goes here)
+# The N byte is written separately by the compiler
+0 > 0 > 0 >                  # ... rest of mov ebx (zeros as placeholder)
+205 > 128 >                  # int 0x80
+
+q
