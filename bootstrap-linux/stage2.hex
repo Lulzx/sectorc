@@ -34,7 +34,7 @@
 00 00 00 00                 # p_offset: 0
 00 80 04 08                 # p_vaddr: 0x08048000
 00 80 04 08                 # p_paddr: 0x08048000
-9d 01 00 00                 # p_filesz: 413 bytes
+df 01 00 00                 # p_filesz: 479 bytes
 00 00 02 00                 # p_memsz: 128K (stack space)
 07 00 00 00                 # p_flags: RWX
 00 10 00 00                 # p_align: 4096
@@ -42,34 +42,37 @@
 # === Code @ 0x54 (329 bytes) ===
 
 # === INIT ===
-bd 00 00 01 00              # mov ebp, 0x10000
-bf 00 20 00 00              # mov edi, 0x2000 (HERE)
+bd 00 7f 06 08              # mov ebp, 0x08067f00 (data stack)
+bf 00 90 04 08              # mov edi, 0x08049000 (HERE)
 31 f6                       # xor esi, esi
 31 db                       # xor ebx, ebx
 
-# === LOOP @0x62 ===
-6a 00                       # push 0
+# === LOOP @0x60 === (includes 31 db for non-digit paths)
+# === LOOP2 @0x62 === (skips 31 db for digit accumulation)
+6a 00                       # push 0 (buffer)
+53                          # push ebx (save number)
+31 db                       # xor ebx, ebx (fd=0)
 b8 03 00 00 00              # mov eax, 3
-31 c9                       # xor ecx, ecx
-8d 4c 24 00                 # lea ecx, [esp]
+8d 4c 24 04                 # lea ecx, [esp+4] (buffer)
 ba 01 00 00 00              # mov edx, 1
 cd 80                       # int 0x80
+5b                          # pop ebx (restore number)
 85 c0                       # test eax, eax
-0f 84 20 01 00 00           # jz _quit
+0f 84 51 01 00 00           # jz _quit (0x1cf)
 8a 04 24                    # mov al, [esp]
 83 c4 04                    # add esp, 4
 
 # Digit?
 3c 30                       # cmp al, '0'
-7c 13                       # jl _not_digit
+7c 15                       # jl _not_digit (0x9d)
 3c 39                       # cmp al, '9'
-7f 0f                       # jg _not_digit
+7f 11                       # jg _not_digit (0x9d)
 2c 30                       # sub al, '0'
 0f b6 c0                    # movzx eax, al
 6b db 0a                    # imul ebx, 10
 01 c3                       # add ebx, eax
 be 01 00 00 00              # mov esi, 1
-eb c3                       # jmp _loop
+eb c3                       # jmp _loop (0x62)
 
 # _not_digit
 85 f6                       # test esi, esi
@@ -81,15 +84,15 @@ eb c3                       # jmp _loop
 
 # _no_push - whitespace?
 3c 20                       # cmp al, ' '
-74 b1                       # je _loop
+74 b1                       # je _loop (0x62)
 3c 0a                       # cmp al, '\n'
-74 ad                       # je _loop
+74 ad                       # je _loop (0x62)
 3c 09                       # cmp al, '\t'
-74 a9                       # je _loop
+74 a9                       # je _loop (0x62)
 
 # Skip comments
 3c 23                       # cmp al, '#'
-75 0e                       # jne _check_ops
+75 1e                       # jne _check_ops (skip 30 bytes)
 # _skip_comment:
 6a 00                       # push 0
 b8 03 00 00 00              # mov eax, 3
@@ -99,44 +102,44 @@ cd 80                       # int 0x80
 8a 04 24                    # mov al, [esp]
 83 c4 04                    # add esp, 4
 3c 0a                       # cmp al, '\n'
-75 e6                       # jne _skip_comment
-eb 8b                       # jmp _loop
+75 e4                       # jne _skip_comment (0xbd)
+eb 87                       # jmp _loop (0x62)
 
 # _check_ops: Commands
 3c 2b                       # +
-75 0a                       # jne
+75 0e                       # jne (skip 14 bytes)
 8b 45 00                    # mov eax, [ebp]
 83 c5 04                    # add ebp, 4
 01 45 00                    # add [ebp], eax
-e9 73 ff ff ff              # jmp _loop
+e9 75 ff ff ff              # jmp _loop (0x62)
 
 3c 2d                       # -
-75 0a                       # jne
+75 0e                       # jne (skip 14 bytes)
 8b 45 00                    # mov eax, [ebp]
 83 c5 04                    # add ebp, 4
 29 45 00                    # sub [ebp], eax
-e9 63 ff ff ff              # jmp _loop
+e9 63 ff ff ff              # jmp _loop (0x62)
 
 3c 2a                       # *
-75 0d                       # jne
+75 11                       # jne (skip 17 bytes)
 8b 45 04                    # mov eax, [ebp+4]
 f7 6d 00                    # imul dword [ebp]
 83 c5 04                    # add ebp, 4
 89 45 00                    # mov [ebp], eax
-e9 50 ff ff ff              # jmp _loop
+e9 4e ff ff ff              # jmp _loop (0x62)
 
 3c 2f                       # /
-75 10                       # jne
+75 14                       # jne (skip 20 bytes)
 8b 4d 00                    # mov ecx, [ebp]
 8b 45 04                    # mov eax, [ebp+4]
 99                          # cdq
 f7 f9                       # idiv ecx
 83 c5 04                    # add ebp, 4
 89 45 00                    # mov [ebp], eax
-e9 3a ff ff ff              # jmp _loop
+e9 36 ff ff ff              # jmp _loop (0x62)
 
 3c 3e                       # > emit
-75 14                       # jne
+75 22                       # jne (skip 34 bytes)
 8b 45 00                    # mov eax, [ebp]
 83 c5 04                    # add ebp, 4
 50                          # push eax
@@ -147,63 +150,63 @@ ba 01 00 00 00              # mov edx, 1
 cd 80                       # int 0x80
 58                          # pop eax
 31 db                       # xor ebx, ebx (restore)
-e9 18 ff ff ff              # jmp _loop
+e9 10 ff ff ff              # jmp _loop (0x62)
 
 3c 64                       # d (dup)
-75 0a                       # jne
+75 0e                       # jne (skip 14 bytes)
 8b 45 00                    # mov eax, [ebp]
 83 ed 04                    # sub ebp, 4
 89 45 00                    # mov [ebp], eax
-e9 08 ff ff ff              # jmp _loop
+e9 fe fe ff ff              # jmp _loop (0x62)
 
 3c 78                       # x (drop)
-75 07                       # jne
+75 08                       # jne (skip 8 bytes)
 83 c5 04                    # add ebp, 4
-e9 fd fe ff ff              # jmp _loop
+e9 f2 fe ff ff              # jmp _loop (0x62)
 
 3c 73                       # s (swap)
-75 0f                       # jne
+75 11                       # jne (skip 17 bytes)
 8b 45 00                    # mov eax, [ebp]
 8b 55 04                    # mov edx, [ebp+4]
 89 55 00                    # mov [ebp], edx
 89 45 04                    # mov [ebp+4], eax
-e9 ea fe ff ff              # jmp _loop
+e9 dd fe ff ff              # jmp _loop (0x62)
 
 3c 40                       # @ (fetch)
-75 09                       # jne
+75 0d                       # jne (skip 13 bytes)
 8b 45 00                    # mov eax, [ebp]
 8b 00                       # mov eax, [eax]
 89 45 00                    # mov [ebp], eax
-e9 db fe ff ff              # jmp _loop
+e9 cc fe ff ff              # jmp _loop (0x62)
 
 3c 21                       # ! (store)
-75 0d                       # jne
+75 10                       # jne (skip 16 bytes)
 8b 45 00                    # mov eax, [ebp]
 8b 55 04                    # mov edx, [ebp+4]
 89 10                       # mov [eax], edx
 83 c5 08                    # add ebp, 8
-e9 c9 fe ff ff              # jmp _loop
+e9 b8 fe ff ff              # jmp _loop (0x62)
 
 3c 48                       # H (HERE)
-75 09                       # jne
+75 0b                       # jne (skip 11 bytes)
 83 ed 04                    # sub ebp, 4
 89 7d 00                    # mov [ebp], edi
-e9 bc fe ff ff              # jmp _loop
+e9 a9 fe ff ff              # jmp _loop (0x62)
 
 3c 2c                       # , (comma - compile)
-75 0c                       # jne
+75 10                       # jne (skip 16 bytes)
 8b 45 00                    # mov eax, [ebp]
 83 c5 04                    # add ebp, 4
 89 07                       # mov [edi], eax
 83 c7 04                    # add edi, 4
-e9 a9 fe ff ff              # jmp _loop
+e9 95 fe ff ff              # jmp _loop (0x62)
 
 3c 71                       # q (quit)
-75 07                       # jne _unknown
+75 09                       # jne _unknown (skip 9 bytes)
 # _quit
 b8 01 00 00 00              # mov eax, 1
 31 db                       # xor ebx, ebx
 cd 80                       # int 0x80
 
 # _unknown - ignore
-e9 95 fe ff ff              # jmp _loop
+e9 83 fe ff ff              # jmp _loop (0x62)

@@ -30,8 +30,8 @@
 0 > 0 > 0 > 0 >              # p_offset: 0
 0 > 128 > 4 > 8 >            # p_vaddr: 0x08048000
 0 > 128 > 4 > 8 >            # p_paddr: 0x08048000
-128 > 0 > 0 > 0 >            # p_filesz: 128 bytes
-128 > 0 > 0 > 0 >            # p_memsz: 128 bytes
+121 > 0 > 0 > 0 >            # p_filesz: 121 bytes
+121 > 0 > 0 > 0 >            # p_memsz: 121 bytes
 7 > 0 > 0 > 0 >              # p_flags: RWX
 0 > 16 > 0 > 0 >             # p_align: 4096
 
@@ -43,9 +43,9 @@
 # mov ebx, 1 (stdout)
 187 > 1 > 0 > 0 > 0 >        # bb 01 00 00 00
 
-# mov ecx, msg (address of "Hello\n" - calculate: 0x08048054 + offset to msg)
-# msg is at offset ~0x6c from code start, so vaddr = 0x08048054 + 0x18 = 0x0804806c
-185 > 108 > 128 > 4 > 8 >    # b9 6c 80 04 08
+# mov ecx, msg (address of "Hello\n" at file offset 115 = 0x73)
+# vaddr = 0x08048000 + 0x73 = 0x08048073
+185 > 115 > 128 > 4 > 8 >    # b9 73 80 04 08
 
 # mov edx, 6 (length)
 186 > 6 > 0 > 0 > 0 >        # ba 06 00 00 00
@@ -62,7 +62,7 @@
 # int 0x80
 205 > 128 >                  # cd 80
 
-# === Data: "Hello\n" (at offset 0x6c from file start) ===
+# === Data: "Hello\n" (at offset 0x73 = 115 from file start) ===
 72 > 101 > 108 > 108 > 111 > 10 >   # H e l l o \n
 
 q

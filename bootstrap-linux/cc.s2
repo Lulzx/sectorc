@@ -55,9 +55,9 @@
 186 > 1 > 0 > 0 > 0 >        # mov edx, 1
 205 > 128 >                  # int 0x80
 133 > 192 >                  # test eax, eax
-15 > 132 > 200 > 0 > 0 > 0 > # jz _error (EOF before return)
+15 > 132 > 142 > 0 > 0 > 0 > # jz _error (offset 0x8e to 0x100)
 128 > 61 > 0 > 129 > 4 > 8 > 114 >  # cmp byte [buffer], 'r'
-117 > 224 >                  # jne _skip
+117 > 217 >                  # jne _skip (offset -39 = 0xd9)
 
 # Found 'r', skip "eturn "
 184 > 3 > 0 > 0 > 0 >        # mov eax, 3
@@ -84,9 +84,9 @@
 # mov ebx, 1 (stdout)
 187 > 1 > 0 > 0 > 0 >
 # mov ecx, elf_template
-185 > 16 > 129 > 4 > 8 >     # 0x08048110
-# mov edx, 84
-186 > 84 > 0 > 0 > 0 >
+185 > 12 > 129 > 4 > 8 >     # 0x0804810c (template at offset 0x10c)
+# mov edx, 90 (header 84 + mov eax 5 + mov ebx opcode 1)
+186 > 90 > 0 > 0 > 0 >
 205 > 128 >                  # int 0x80
 
 # Output exit code at correct offset
@@ -105,8 +105,8 @@
 # Write rest of template
 184 > 4 > 0 > 0 > 0 >
 187 > 1 > 0 > 0 > 0 >
-185 > 100 > 129 > 4 > 8 >    # after the patched byte
-186 > 4 > 0 > 0 > 0 >        # remaining 4 bytes
+185 > 102 > 129 > 4 > 8 >    # 0x08048166 (template + 90, the 00s after N)
+186 > 5 > 0 > 0 > 0 >        # remaining 5 bytes (00 00 00 cd 80)
 205 > 128 >                  # int 0x80
 
 # Exit successfully

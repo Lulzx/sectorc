@@ -14,71 +14,72 @@
 
 # Program Header (32 bytes)
 01 00 00 00 00 00 00 00 00 80 04 08 00 80 04 08
-60 00 00 00 00 10 00 00 07 00 00 00 00 10 00 00
+b0 00 00 00 00 10 00 00 07 00 00 00 00 10 00 00
 
 # Code at 0x54 (12 bytes)
 # Super minimal: read pairs, convert, write, loop
 # Uses: eax=syscall, ebx=fd, ecx=buf, edx=count
 
-31 db                       # xor ebx, ebx (stdin/stdout=0/1)
-eb 17                       # jmp _read
+31 db                       # 00: xor ebx, ebx (stdin/stdout=0/1)
+eb 0b                       # 02: jmp _read (0x0f)
 
-# _convert: al has hex char, convert to nibble
-3c 39                       # cmp al, '9'
-7e 02                       # jle _digit
-2c 07                       # sub al, 7
-2c 30                       # sub al, '0'
-c3                          # ret
+# _convert: (at 0x04) al has hex char, convert to nibble
+3c 39                       # 04: cmp al, '9'
+7e 04                       # 06: jle _digit (skip to 0x0c)
+24 df                       # 08: and al, 0xDF (uppercase)
+2c 07                       # 0a: sub al, 7
+2c 30                       # 0c: _digit: sub al, '0'
+c3                          # 0e: ret
 
-# _read: read first hex char
-b0 03                       # mov al, 3 (read)
-31 c9                       # xor ecx, ecx
-51                          # push ecx (buffer)
-89 e1                       # mov ecx, esp
-b2 01                       # mov dl, 1
-cd 80                       # int 0x80
-85 c0                       # test eax, eax
-74 23                       # jz _exit
-58                          # pop eax (char)
+# _read: (at 0x0f) read first hex char
+b0 03                       # 0f: mov al, 3 (read)
+31 c9                       # 11: xor ecx, ecx
+51                          # 13: push ecx (buffer)
+89 e1                       # 14: mov ecx, esp
+b2 01                       # 16: mov dl, 1
+cd 80                       # 18: int 0x80
+85 c0                       # 1a: test eax, eax
+74 3a                       # 1c: jz _exit (0x58)
+58                          # 1e: pop eax (char)
 
 # skip whitespace
-3c 20                       # cmp al, ' '
-74 eb                       # je _read
-3c 0a                       # cmp al, '\n'
-74 e7                       # je _read
-3c 09                       # cmp al, '\t'
-74 e3                       # je _read
+3c 20                       # 1f: cmp al, ' '
+74 ec                       # 21: je _read (0x0f)
+3c 0a                       # 23: cmp al, '\n'
+74 e8                       # 25: je _read (0x0f)
+3c 09                       # 27: cmp al, '\t'
+74 e4                       # 29: je _read (0x0f)
 
 # got first nibble
-e8 d5 ff ff ff              # call _convert
-c0 e0 04                    # shl al, 4
-50                          # push eax
+e8 d4 ff ff ff              # 2b: call _convert (0x04)
+c0 e0 04                    # 30: shl al, 4
+50                          # 33: push eax
 
 # read second char
-b0 03                       # mov al, 3
-31 c9                       # xor ecx, ecx
-51                          # push ecx
-89 e1                       # mov ecx, esp
-b2 01                       # mov dl, 1
-cd 80                       # int 0x80
-58                          # pop eax
+b0 03                       # 34: mov al, 3
+31 c9                       # 36: xor ecx, ecx
+51                          # 38: push ecx
+89 e1                       # 39: mov ecx, esp
+b2 01                       # 3b: mov dl, 1
+cd 80                       # 3d: int 0x80
+58                          # 3f: pop eax
 
 # convert and combine
-e8 c1 ff ff ff              # call _convert
-5a                          # pop edx (high nibble)
-08 d0                       # or al, dl
+e8 bf ff ff ff              # 40: call _convert (0x04)
+5a                          # 45: pop edx (high nibble)
+08 d0                       # 46: or al, dl
 
 # write byte
-50                          # push eax
-b0 04                       # mov al, 4 (write)
-b3 01                       # mov bl, 1 (stdout)
-89 e1                       # mov ecx, esp
-b2 01                       # mov dl, 1
-cd 80                       # int 0x80
-58                          # pop eax
-31 db                       # xor ebx, ebx
-eb b8                       # jmp _read
+50                          # 48: push eax
+b0 04                       # 49: mov al, 4 (write)
+b3 01                       # 4b: mov bl, 1 (stdout)
+89 e1                       # 4d: mov ecx, esp
+b2 01                       # 4f: mov dl, 1
+cd 80                       # 51: int 0x80
+58                          # 53: pop eax
+31 db                       # 54: xor ebx, ebx
+eb b7                       # 56: jmp _read (0x0f)
 
-# _exit
-b0 01                       # mov al, 1
-cd 80                       # int 0x80
+# _exit: (at 0x58)
+b0 01                       # 58: mov al, 1
+cd 80                       # 5a: int 0x80
