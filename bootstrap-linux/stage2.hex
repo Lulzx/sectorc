@@ -1,173 +1,160 @@
-# Stage 2: Extended Stack Calculator - Linux i386
-# Build: cat stage2.hex | ./hex2bin > calc && chmod +x calc
-# Run:   echo "10 20 + ." | ./calc   # prints 30
+# Stage 2: Mini Forth - Linux i386
+# Build: cat stage2.hex | ./hex2bin > forth && chmod +x forth
 #
-# Commands:
-#   0-9   Digits (builds multi-digit numbers)
-#   space End number, push to stack
-#   +     Add
-#   -     Subtract
-#   *     Multiply
-#   /     Divide
-#   .     Print number
-#   >     Emit byte (output to stdout)
-#   d     Duplicate top
-#   x     Drop top
-#   s     Swap top two
-#   q     Quit
-#
-# Size: ~250 bytes
+# Commands: 0-9 + - * / > d x s @ ! H , q
+# Size: ~350 bytes
 # ============================================================================
 
-# ebp = data stack (grows down from 0x8000)
-# edi = current number being built (0 = no number)
-# esi = "building number" flag
+# ebp = stack (down from 0x10000), edi = HERE, esi/ebx = number building
 
-# === INIT @0x00 ===
-bd 00 80 00 00              # 00: mov ebp, 0x8000
-31 ff                       # 05: xor edi, edi (num = 0)
-31 f6                       # 07: xor esi, esi (flag = 0)
+# === INIT ===
+bd 00 00 01 00              # mov ebp, 0x10000
+bf 00 20 00 00              # mov edi, 0x2000 (HERE)
+31 f6                       # xor esi, esi
+31 db                       # xor ebx, ebx
 
-# === LOOP @0x09 ===
-6a 00                       # 09: push 0
-b8 03 00 00 00              # 0b: mov eax, 3
-31 db                       # 10: xor ebx, ebx
-89 e1                       # 12: mov ecx, esp
-ba 01 00 00 00              # 14: mov edx, 1
-cd 80                       # 19: int 0x80
-85 c0                       # 1b: test eax, eax
-0f 84 d0 00 00 00           # 1d: jz _quit (near jmp)
-8a 04 24                    # 23: mov al, [esp]
-83 c4 04                    # 26: add esp, 4
+# === LOOP @0x0e ===
+6a 00                       # push 0
+b8 03 00 00 00              # mov eax, 3
+31 c9                       # xor ecx, ecx
+8d 4c 24 00                 # lea ecx, [esp]
+ba 01 00 00 00              # mov edx, 1
+cd 80                       # int 0x80
+85 c0                       # test eax, eax
+0f 84 20 01 00 00           # jz _quit
+8a 04 24                    # mov al, [esp]
+83 c4 04                    # add esp, 4
 
-# digit?
-3c 30                       # 29: cmp al, '0'
-7c 18                       # 2b: jl _not_digit @45
-3c 39                       # 2d: cmp al, '9'
-7f 14                       # 2f: jg _not_digit
-# Build number: num = num * 10 + digit
-2c 30                       # 31: sub al, '0'
-0f b6 c0                    # 33: movzx eax, al
-6b ff 0a                    # 36: imul edi, 10
-01 c7                       # 39: add edi, eax
-be 01 00 00 00              # 3b: mov esi, 1 (flag = building)
-eb c8                       # 40: jmp _loop @09 (0x09-0x42=-0x39=0xc7)
-# _end_digit @0x42 (padding)
-90                          # 42: nop
-90                          # 43: nop
-90                          # 44: nop
+# Digit?
+3c 30                       # cmp al, '0'
+7c 13                       # jl _not_digit
+3c 39                       # cmp al, '9'
+7f 0f                       # jg _not_digit
+2c 30                       # sub al, '0'
+0f b6 c0                    # movzx eax, al
+6b db 0a                    # imul ebx, 10
+01 c3                       # add ebx, eax
+be 01 00 00 00              # mov esi, 1
+eb c3                       # jmp _loop
 
-# _not_digit @0x45
-# If we were building a number, push it first
-85 f6                       # 45: test esi, esi
-74 0a                       # 47: jz _no_push @53
-83 ed 04                    # 49: sub ebp, 4
-89 7d 00                    # 4c: mov [ebp], edi
-31 ff                       # 4f: xor edi, edi
-31 f6                       # 51: xor esi, esi
-# _no_push @0x53
+# _not_digit
+85 f6                       # test esi, esi
+74 08                       # jz _no_push
+83 ed 04                    # sub ebp, 4
+89 5d 00                    # mov [ebp], ebx
+31 db                       # xor ebx, ebx
+31 f6                       # xor esi, esi
 
-# space? (already pushed number above)
-3c 20                       # 53: cmp al, ' '
-74 b2                       # 55: je _loop (0x09-0x57=-0x4e=0xb2)
-3c 0a                       # 57: cmp al, '\n'
-74 ae                       # 59: je _loop
-3c 09                       # 5b: cmp al, '\t'
-74 aa                       # 5d: je _loop
+# _no_push - whitespace?
+3c 20                       # cmp al, ' '
+74 b1                       # je _loop
+3c 0a                       # cmp al, '\n'
+74 ad                       # je _loop
+3c 09                       # cmp al, '\t'
+74 a9                       # je _loop
 
-# + @0x5f
-3c 2b                       # 5f: cmp al, '+'
-75 0a                       # 61: jne _not_add @6d
-8b 45 00                    # 63: mov eax, [ebp]
-83 c5 04                    # 66: add ebp, 4
-01 45 00                    # 69: add [ebp], eax
-eb 9c                       # 6c: jmp _loop
+# Commands
+3c 2b                       # +
+75 0a                       # jne
+8b 45 00                    # mov eax, [ebp]
+83 c5 04                    # add ebp, 4
+01 45 00                    # add [ebp], eax
+eb 9b                       # jmp _loop
 
-# _not_add @0x6e
-3c 2d                       # 6e: cmp al, '-'
-75 0a                       # 70: jne _not_sub @7c
-8b 45 00                    # 72: mov eax, [ebp]
-83 c5 04                    # 75: add ebp, 4
-29 45 00                    # 78: sub [ebp], eax
-eb 8d                       # 7b: jmp _loop
+3c 2d                       # -
+75 0a                       # jne
+8b 45 00                    # mov eax, [ebp]
+83 c5 04                    # add ebp, 4
+29 45 00                    # sub [ebp], eax
+eb 8d                       # jmp _loop
 
-# _not_sub @0x7d
-3c 2a                       # 7d: cmp al, '*'
-75 0d                       # 7f: jne _not_mul @8e
-8b 45 04                    # 81: mov eax, [ebp+4]
-f7 6d 00                    # 84: imul dword [ebp]
-83 c5 04                    # 87: add ebp, 4
-89 45 00                    # 8a: mov [ebp], eax
-eb 7b                       # 8d: jmp _loop
+3c 2a                       # *
+75 0d                       # jne
+8b 45 04                    # mov eax, [ebp+4]
+f7 6d 00                    # imul dword [ebp]
+83 c5 04                    # add ebp, 4
+89 45 00                    # mov [ebp], eax
+eb 7c                       # jmp _loop
 
-# _not_mul @0x8f
-3c 2f                       # 8f: cmp al, '/'
-75 10                       # 91: jne _not_div @a3
-8b 4d 00                    # 93: mov ecx, [ebp]
-8b 45 04                    # 96: mov eax, [ebp+4]
-99                          # 99: cdq
-f7 f9                       # 9a: idiv ecx
-83 c5 04                    # 9c: add ebp, 4
-89 45 00                    # 9f: mov [ebp], eax
-eb 66                       # a2: jmp _loop
+3c 2f                       # /
+75 10                       # jne
+8b 4d 00                    # mov ecx, [ebp]
+8b 45 04                    # mov eax, [ebp+4]
+99                          # cdq
+f7 f9                       # idiv ecx
+83 c5 04                    # add ebp, 4
+89 45 00                    # mov [ebp], eax
+eb 68                       # jmp _loop
 
-# _not_div @0xa4
-3c 3e                       # a4: cmp al, '>'
-75 10                       # a6: jne _not_emit @b8
-# Emit byte to stdout
-8b 45 00                    # a8: mov eax, [ebp]
-83 c5 04                    # ab: add ebp, 4
-50                          # ae: push eax
-b8 04 00 00 00              # af: mov eax, 4
-bb 01 00 00 00              # b4: mov ebx, 1
-89 e1                       # b9: mov ecx, esp
-ba 01 00 00 00              # bb: mov edx, 1
-cd 80                       # c0: int 0x80
-58                          # c2: pop eax
-eb 43                       # c3: jmp _loop
+3c 3e                       # > emit
+75 14                       # jne
+8b 45 00                    # mov eax, [ebp]
+83 c5 04                    # add ebp, 4
+50                          # push eax
+b8 04 00 00 00              # mov eax, 4
+bb 01 00 00 00              # mov ebx, 1
+89 e1                       # mov ecx, esp
+ba 01 00 00 00              # mov edx, 1
+cd 80                       # int 0x80
+58                          # pop eax
+31 db                       # xor ebx, ebx (restore)
+eb 48                       # jmp _loop
 
-# _not_emit @0xc5
-3c 64                       # c5: cmp al, 'd' (dup)
-75 0a                       # c7: jne _not_dup @d3
-8b 45 00                    # c9: mov eax, [ebp]
-83 ed 04                    # cc: sub ebp, 4
-89 45 00                    # cf: mov [ebp], eax
-eb 36                       # d2: jmp _loop
+3c 64                       # d (dup)
+75 0a                       # jne
+8b 45 00                    # mov eax, [ebp]
+83 ed 04                    # sub ebp, 4
+89 45 00                    # mov [ebp], eax
+eb 3a                       # jmp _loop
 
-# _not_dup @0xd4
-3c 78                       # d4: cmp al, 'x' (drop)
-75 04                       # d6: jne _not_drop @dc
-83 c5 04                    # d8: add ebp, 4
-eb 2d                       # db: jmp _loop
+3c 78                       # x (drop)
+75 04                       # jne
+83 c5 04                    # add ebp, 4
+eb 32                       # jmp _loop
 
-# _not_drop @0xdd
-3c 73                       # dd: cmp al, 's' (swap)
-75 0c                       # df: jne _not_swap @ed
-8b 45 00                    # e1: mov eax, [ebp]
-8b 55 04                    # e4: mov edx, [ebp+4]
-89 55 00                    # e7: mov [ebp], edx
-89 45 04                    # ea: mov [ebp+4], eax
-eb 1b                       # ed: jmp _loop
+3c 73                       # s (swap)
+75 0c                       # jne
+8b 45 00                    # mov eax, [ebp]
+8b 55 04                    # mov edx, [ebp+4]
+89 55 00                    # mov [ebp], edx
+89 45 04                    # mov [ebp+4], eax
+eb 22                       # jmp _loop
 
-# _not_swap @0xef
-3c 2e                       # ef: cmp al, '.'
-0f 85 12 ff ff ff           # f1: jne _loop (near)
-# Print number (simple decimal)
-8b 45 00                    # f7: mov eax, [ebp]
-83 c5 04                    # fa: add ebp, 4
-# TODO: proper number print (this is simplified)
-83 c0 30                    # fd: add eax, '0'
-50                          # 100: push eax
-6a 0a                       # 101: push '\n'
-b8 04 00 00 00              # 103: mov eax, 4
-bb 01 00 00 00              # 108: mov ebx, 1
-8d 4c 24 04                 # 10d: lea ecx, [esp+4]
-ba 02 00 00 00              # 111: mov edx, 2
-cd 80                       # 116: int 0x80
-83 c4 08                    # 118: add esp, 8
-e9 ea fe ff ff              # 11b: jmp _loop
+3c 40                       # @ (fetch)
+75 06                       # jne
+8b 45 00                    # mov eax, [ebp]
+8b 00                       # mov eax, [eax]
+89 45 00                    # mov [ebp], eax
+eb 14                       # jmp _loop
 
-# _quit @0x120
-b8 01 00 00 00              # 120: mov eax, 1
-31 db                       # 125: xor ebx, ebx
-cd 80                       # 127: int 0x80
+3c 21                       # ! (store)
+75 0a                       # jne
+8b 45 00                    # mov eax, [ebp]
+8b 55 04                    # mov edx, [ebp+4]
+89 10                       # mov [eax], edx
+83 c5 08                    # add ebp, 8
+eb 04                       # jmp _loop
+
+3c 48                       # H (HERE)
+75 06                       # jne
+83 ed 04                    # sub ebp, 4
+89 7d 00                    # mov [ebp], edi
+e9 3f ff ff ff              # jmp _loop (near)
+
+3c 2c                       # , (comma - compile)
+75 06                       # jne
+8b 45 00                    # mov eax, [ebp]
+83 c5 04                    # add ebp, 4
+89 07                       # mov [edi], eax
+83 c7 04                    # add edi, 4
+e9 2c ff ff ff              # jmp _loop
+
+3c 71                       # q (quit)
+75 07                       # jne _unknown
+# _quit
+b8 01 00 00 00              # mov eax, 1
+31 db                       # xor ebx, ebx
+cd 80                       # int 0x80
+
+# _unknown - ignore
+e9 18 ff ff ff              # jmp _loop

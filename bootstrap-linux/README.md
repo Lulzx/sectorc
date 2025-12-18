@@ -40,9 +40,33 @@ cat hello.c | ./cc > hello.s
 |------|------|-------------|
 | `stage0.hex` | 198 bytes | Hex loader - executes hex as i386 code |
 | `stage1.hex` | 120 bytes | Hex to binary converter |
-| `stage2.hex` | 190 bytes | Stack calculator (RPN) |
+| `stage2.hex` | 329 bytes | Mini Forth (+ - * / > @ ! d x s H ,) |
+| `hello.s2` | example | Hello World ELF written in Stage 2 |
 
-**Total trust anchor: 508 bytes** - auditable in ~1 hour
+**Total trust anchor: 647 bytes** - auditable in ~1.5 hours
+
+## Stage 2 Commands
+
+| Cmd | Description |
+|-----|-------------|
+| 0-9 | Build number (multi-digit) |
+| space | End number, push to stack |
+| + - * / | Arithmetic |
+| > | Emit byte to stdout |
+| @ | Fetch 32-bit from address |
+| ! | Store 32-bit to address |
+| d | Duplicate top |
+| x | Drop top |
+| s | Swap top two |
+| H | Push HERE pointer |
+| , | Store to HERE, advance |
+| q | Quit |
+
+## Example: Build Hello World ELF
+
+```bash
+./forth < hello.s2 > hello && chmod +x hello && ./hello
+```
 
 ## Verification
 
