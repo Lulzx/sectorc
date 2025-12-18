@@ -15,22 +15,25 @@ Stage 0       Stage 1       Stage 2       Stage 3       Stage 4       Stage 5
 
 **Status: Verified Working** ✓
 
-The complete bootstrap pipeline has been verified:
-1. Stage 0 loads the Forth interpreter from hex format
-2. Stage 1 interprets Stage 2 Forth extensions
-3. Stage 3 C compiler (written in Forth) compiles C to ARM64 assembly
-4. Generated assembly assembles and executes correctly
+The bootstrap pipeline produces ARM64 assembly (`.s` files) which you then assemble into executables:
 
-```
+```bash
 $ ./bootstrap.sh
-===========================================
-Sectorc: Trustworthy Bootstrap Chain
-===========================================
-...
 SUCCESS: Valid assembly generated.
 
-$ ./test_output; echo "Exit code: $?"
-Exit code: 42
+$ cat output.s
+.global _main
+.align 4
+_main:
+  mov w0, #0x0000002a    ; return 42
+  ...
+  ret
+
+# Assemble and link the output
+$ as -arch arm64 -o output.o output.s
+$ ld -arch arm64 -e _main -o output output.o -lSystem -L$(xcrun --show-sdk-path)/usr/lib
+$ ./output; echo $?
+42
 ```
 
 ## How It Works
@@ -58,9 +61,10 @@ The entire chain runs as a single pipeline with no intermediate files.
 
 ### Prerequisites
 
-- macOS with Apple Silicon (ARM64)
+- **macOS with Apple Silicon (ARM64)** - generates Mach-O binaries, not ELF
 - Xcode Command Line Tools (`xcode-select --install`)
-- clang compiler
+
+The compiler outputs ARM64 assembly using macOS conventions (`_main` entry point, Darwin syscalls). Linux/ELF support would require modifying Stage 3.
 
 ### Quick Start
 
@@ -164,9 +168,14 @@ Written in Forth, loaded by Stage 1. Adds higher-level words needed for compiler
 
 ### Stage 3: Subset C Compiler
 
-`stage3/cc` compiles a C subset to ARM64 assembly.
+Compiles a C subset to ARM64 assembly (`.s` files). You assemble the output with:
 
-**Features:**
+```bash
+as -arch arm64 -o prog.o prog.s
+ld -arch arm64 -e _main -o prog prog.o -lSystem -L$(xcrun --show-sdk-path)/usr/lib
+```
+
+**Supported C subset:**
 - Types: int, pointers, arrays
 - Statements: if/else, while, for, return
 - Expressions: arithmetic, comparison, assignment
