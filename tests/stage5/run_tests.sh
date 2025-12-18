@@ -52,6 +52,7 @@ run_test "C99 comments" "c99_comments.c" 0
 run_test "C99 _Bool type" "c99_bool.c" 0
 run_test "C99 for-loop declaration" "c99_for_decl.c" 0
 run_test "C99 inline functions" "c99_inline.c" 0
+run_test "arrays" "../stage3/arrays.c" 0
 
 echo ""
 echo "=== Results: $PASSED passed, $FAILED failed ==="

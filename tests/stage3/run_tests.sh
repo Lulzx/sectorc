@@ -48,6 +48,7 @@ test_c "hello (return 42)" 42 "hello.c"
 test_c "arithmetic" 0 "arithmetic.c"
 test_c "loops" 0 "loops.c"
 test_c "functions" 0 "functions.c"
+test_c "arrays" 0 "arrays.c"
 
 echo ""
 echo "=== Results ==="

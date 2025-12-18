@@ -1053,13 +1053,36 @@ static struct type *parse_primary(void) {
             /* Array access with assignment */
             next_token();
             parse_expr();
-            int elem = (s->type->kind == TYPE_ARRAY) ? s->type->base->size : 8;
-            if (elem > 1) emit("lsl x0, x0, #%d", elem == 2 ? 1 : elem == 4 ? 2 : 3);
-            emit_push();
-            if (s->storage == SC_LOCAL || s->storage == SC_PARAM)
-                emit("sub x0, x29, #%d", s->offset);
+            struct type *elem_type = NULL;
+            if (s->type->kind == TYPE_ARRAY || s->type->kind == TYPE_PTR)
+                elem_type = s->type->base;
             else
-                emit_load_global(s->name);
+                error("subscript of non-array/pointer");
+
+            int elem = elem_type->size;
+            if (elem > 1) {
+                if (elem == 2) emit("lsl x0, x0, #1");
+                else if (elem == 4) emit("lsl x0, x0, #2");
+                else if (elem == 8) emit("lsl x0, x0, #3");
+                else {
+                    emit("mov x2, #%d", elem);
+                    emit("mul x0, x0, x2");
+                }
+            }
+            emit_push();
+            if (s->type->kind == TYPE_ARRAY) {
+                if (s->storage == SC_LOCAL || s->storage == SC_PARAM)
+                    emit("sub x0, x29, #%d", s->offset);
+                else
+                    emit_load_global(s->name);
+            } else {
+                if (s->storage == SC_LOCAL || s->storage == SC_PARAM)
+                    emit_load_local(s->offset);
+                else {
+                    emit_load_global(s->name);
+                    emit_deref(8);
+                }
+            }
             emit_pop();
             emit("add x0, x0, x1");
             expect(TK_RBRACKET);
@@ -1068,19 +1091,25 @@ static struct type *parse_primary(void) {
                 emit_push();
                 next_token();
                 parse_assign();
-                emit("mov x1, x0");
+                emit("mov x2, x0");
                 emit_pop();
+                emit("mov x0, x1");
+                emit("mov x1, x2");
                 emit_store(elem);
+                emit("mov x0, x2");
             } else {
                 emit_deref(elem);
             }
-            return (s->type->kind == TYPE_ARRAY) ? s->type->base : type_int;
+            return elem_type;
         }
 
         if (s->kind == SYM_ENUM_CONST) {
             emit_num(s->offset);  /* Enum constant value stored in offset */
         } else if (s->storage == SC_LOCAL || s->storage == SC_PARAM) {
-            emit_load_local(s->offset);
+            if (s->type->kind == TYPE_ARRAY)
+                emit("sub x0, x29, #%d", s->offset);
+            else
+                emit_load_local(s->offset);
         } else {
             emit_load_global(s->name);
             if (s->type->kind != TYPE_ARRAY && s->type->kind != TYPE_FUNC)
@@ -1282,7 +1311,10 @@ static void parse_stmt(void) {
             if (token == TK_NUM) next_token();
             expect(TK_RBRACKET);
             s->type = array_of(base, size);
-            local_offset += size * base->size - 8;
+            int bytes = size * base->size;
+            bytes = (bytes + 7) & ~7;
+            local_offset += bytes - 8;
+            s->offset = local_offset;
         }
 
         if (token == TK_ASSIGN) {

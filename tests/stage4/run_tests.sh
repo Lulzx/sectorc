@@ -46,6 +46,7 @@ test_c "hello" 42 "../stage3/hello.c"
 test_c "arithmetic" 0 "../stage3/arithmetic.c"
 test_c "loops" 0 "../stage3/loops.c"
 test_c "functions" 0 "../stage3/functions.c"
+test_c "arrays" 0 "../stage3/arrays.c"
 
 # Stage 4 specific tests
 test_c "switch" 0 "switch.c"
