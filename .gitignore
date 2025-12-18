@@ -11,9 +11,12 @@ stage5/cc
 
 # Generated files
 manifest.txt
-*.hex
+stage1.hex
 stage1/forth.exe
 output.s
+
+# Keep stage0-hex source (it's hand-written, not generated)
+!stage0-hex/stage0.hex
 
 # Test artifacts
 /tmp/test*
