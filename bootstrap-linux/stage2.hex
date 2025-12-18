@@ -1,0 +1,98 @@
+# Stage 2: Tiny Stack Calculator - Linux i386
+# Build: cat stage2.hex | ./hex2bin > calc && chmod +x calc
+# Run:   echo "3 4 + ." | ./calc   # prints 7
+#
+# Commands: 0-9 (push), + - * / (ops), . (print), q (quit)
+# Size: ~150 bytes
+# ============================================================================
+
+# ebp = stack pointer (grows down from 0x8000)
+
+# === INIT @0x00 ===
+bd 00 80 00 00              # 00: mov ebp, 0x8000
+
+# === LOOP @0x05 ===
+6a 00                       # 05: push 0 (buffer)
+b8 03 00 00 00              # 07: mov eax, 3
+31 db                       # 0c: xor ebx, ebx
+89 e1                       # 0e: mov ecx, esp
+ba 01 00 00 00              # 10: mov edx, 1
+cd 80                       # 15: int 0x80
+85 c0                       # 17: test eax, eax
+0f 84 8e 00 00 00           # 19: jz _quit (near jump to @ad)
+8a 04 24                    # 1f: mov al, [esp]
+83 c4 04                    # 22: add esp, 4
+
+# digit?
+3c 30                       # 25: cmp al, '0'
+7c 0f                       # 27: jl _not_digit @38
+3c 39                       # 29: cmp al, '9'
+7f 0b                       # 2b: jg _not_digit
+2c 30                       # 2d: sub al, '0'
+0f b6 c0                    # 2f: movzx eax, al
+83 ed 04                    # 32: sub ebp, 4
+89 45 00                    # 35: mov [ebp], eax
+eb cc                       # 38: jmp _loop @05 (0x05-0x3a=-0x35=0xcb)
+
+# _not_digit @0x3a
+3c 2b                       # 3a: cmp al, '+'
+75 0a                       # 3c: jne _not_add @48
+8b 45 00                    # 3e: mov eax, [ebp]
+83 c5 04                    # 41: add ebp, 4
+01 45 00                    # 44: add [ebp], eax
+eb bd                       # 47: jmp _loop
+
+# _not_add @0x49
+3c 2d                       # 49: cmp al, '-'
+75 0a                       # 4b: jne _not_sub @57
+8b 45 00                    # 4d: mov eax, [ebp]
+83 c5 04                    # 50: add ebp, 4
+29 45 00                    # 53: sub [ebp], eax
+eb ae                       # 56: jmp _loop
+
+# _not_sub @0x58
+3c 2a                       # 58: cmp al, '*'
+75 0d                       # 5a: jne _not_mul @69
+8b 45 04                    # 5c: mov eax, [ebp+4]
+f7 6d 00                    # 5f: imul dword [ebp]
+83 c5 04                    # 62: add ebp, 4
+89 45 00                    # 65: mov [ebp], eax
+eb 9c                       # 68: jmp _loop
+
+# _not_mul @0x6a
+3c 2f                       # 6a: cmp al, '/'
+75 10                       # 6c: jne _not_div @7e
+8b 4d 00                    # 6e: mov ecx, [ebp]
+8b 45 04                    # 71: mov eax, [ebp+4]
+99                          # 74: cdq
+f7 f9                       # 75: idiv ecx
+83 c5 04                    # 77: add ebp, 4
+89 45 00                    # 7a: mov [ebp], eax
+eb 87                       # 7d: jmp _loop
+
+# _not_div @0x7f
+3c 2e                       # 7f: cmp al, '.'
+75 1f                       # 81: jne _not_dot @a2
+8b 45 00                    # 83: mov eax, [ebp]
+83 c5 04                    # 86: add ebp, 4
+83 c0 30                    # 89: add eax, '0' (only works for 0-9!)
+50                          # 8c: push eax
+6a 0a                       # 8d: push '\n'
+b8 04 00 00 00              # 8f: mov eax, 4
+bb 01 00 00 00              # 94: mov ebx, 1
+8d 4c 24 04                 # 99: lea ecx, [esp+4]
+ba 02 00 00 00              # 9d: mov edx, 2 (digit + newline)
+cd 80                       # a2: int 0x80
+83 c4 08                    # a4: add esp, 8
+e9 5c ff ff ff              # a7: jmp _loop (near jump back)
+
+# _not_dot @0xac
+3c 71                       # ac: cmp al, 'q'
+75 07                       # ae: jne _skip @b7
+# _quit @0xb0
+b8 01 00 00 00              # b0: mov eax, 1
+31 db                       # b5: xor ebx, ebx
+cd 80                       # b7: int 0x80
+
+# _skip @0xb9 - ignore unknown chars
+e9 47 ff ff ff              # b9: jmp _loop

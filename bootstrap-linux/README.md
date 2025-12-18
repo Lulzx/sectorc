@@ -39,9 +39,10 @@ cat hello.c | ./cc > hello.s
 | File | Size | Description |
 |------|------|-------------|
 | `stage0.hex` | 198 bytes | Hex loader - executes hex as i386 code |
-| `hex2bin.hex` | ~130 bytes | Hex to binary converter |
-| `forth.hex` | ~2KB | Minimal Forth interpreter |
-| `cc.fth` | ~5KB | C compiler in Forth |
+| `stage1.hex` | 120 bytes | Hex to binary converter |
+| `stage2.hex` | 190 bytes | Stack calculator (RPN) |
+
+**Total trust anchor: 508 bytes** - auditable in ~1 hour
 
 ## Verification
 
